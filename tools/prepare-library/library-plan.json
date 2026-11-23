@@ -1,0 +1,206 @@
+{
+  "version": 1,
+  "fileKey": "OQnymDXpbDHoABKg8ks9R7",
+  "pageId": "0:1",
+  "librarySection": "Библиотека · Компоненты",
+  "demoSection": "Демо · Плагин",
+  "objects": [
+    {
+      "id": "book",
+      "name": "Книга",
+      "sources": {
+        "large": {
+          "main": "21:29965",
+          "background": "24:6273"
+        },
+        "small": {
+          "main": "24:3810",
+          "background": "24:6934"
+        }
+      }
+    },
+    {
+      "id": "phone",
+      "name": "Телефон",
+      "sources": {
+        "large": {
+          "main": "21:25472",
+          "background": "24:6327"
+        },
+        "small": {
+          "main": "24:4746",
+          "background": "24:6990"
+        }
+      }
+    },
+    {
+      "id": "puzzle",
+      "name": "Пазлы",
+      "sources": {
+        "large": {
+          "main": "21:417",
+          "background": "24:6214"
+        },
+        "small": {
+          "main": "24:4903",
+          "background": "24:7147"
+        }
+      }
+    },
+    {
+      "id": "coin",
+      "name": "Монета",
+      "sources": {
+        "large": {
+          "main": "24:2207",
+          "background": "24:6795"
+        },
+        "small": {
+          "main": "24:5345",
+          "background": "24:7205"
+        }
+      }
+    },
+    {
+      "id": "headphones",
+      "name": "Наушники",
+      "sources": {
+        "large": {
+          "main": "23:122",
+          "background": "24:6484"
+        },
+        "small": {
+          "main": "24:5089",
+          "background": "24:7344"
+        }
+      }
+    },
+    {
+      "id": "lamp",
+      "name": "Лампа",
+      "sources": {
+        "large": {
+          "main": "23:121",
+          "background": "24:6569"
+        },
+        "small": {
+          "main": "24:5485",
+          "background": "24:7429"
+        }
+      }
+    },
+    {
+      "id": "bouquet",
+      "name": "Букет",
+      "sources": {
+        "large": {
+          "main": "28:11628",
+          "background": "30:11902"
+        },
+        "small": {
+          "main": "28:11629",
+          "background": "28:11766"
+        }
+      }
+    },
+    {
+      "id": "wallet",
+      "name": "Кошелёк",
+      "sources": {
+        "large": {
+          "main": "23:211",
+          "background": "24:6660"
+        },
+        "small": {
+          "main": "24:4594",
+          "background": "24:7568"
+        }
+      }
+    },
+    {
+      "id": "folder",
+      "name": "Папка",
+      "sources": {
+        "large": {
+          "main": "24:1899",
+          "background": "24:6772"
+        },
+        "small": {
+          "main": "24:4430",
+          "background": "24:7520"
+        }
+      }
+    },
+    {
+      "id": "pen",
+      "name": "Ручка",
+      "sources": {
+        "large": {
+          "main": "24:1734",
+          "background": "24:6747"
+        },
+        "small": {
+          "main": "24:4287",
+          "background": "24:7543"
+        }
+      }
+    }
+  ],
+  "backgrounds": [
+    {
+      "id": "21:25258",
+      "size": "large",
+      "scheme": "violet"
+    },
+    {
+      "id": "21:25399",
+      "size": "large",
+      "scheme": "peach"
+    },
+    {
+      "id": "21:29593",
+      "size": "large",
+      "scheme": "turquoise"
+    },
+    {
+      "id": "24:5990",
+      "size": "small",
+      "scheme": "violet"
+    },
+    {
+      "id": "24:6120",
+      "size": "small",
+      "scheme": "peach"
+    },
+    {
+      "id": "24:6055",
+      "size": "small",
+      "scheme": "turquoise"
+    }
+  ],
+  "palettes": [
+    {
+      "id": "violet",
+      "name": "Сиреневая",
+      "sourceId": "21:29569"
+    },
+    {
+      "id": "peach",
+      "name": "Персиковая",
+      "sourceId": "21:29570"
+    },
+    {
+      "id": "turquoise",
+      "name": "Бирюзовая",
+      "sourceId": "21:29579"
+    }
+  ],
+  "companions": {
+    "book/large/main": [
+      "21:29952"
+    ],
+    "book/large/background": [
+      "24:6272"
+    ]
+  }
+}

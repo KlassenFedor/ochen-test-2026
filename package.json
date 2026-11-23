@@ -1,0 +1,17 @@
+{
+  "name": "ochen-illustration-composer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run typecheck && node scripts/test.mjs && node tools/prepare-library/check.mjs",
+    "package": "node scripts/package.mjs"
+  },
+  "engines": { "node": ">=20" },
+  "devDependencies": {
+    "esbuild": "0.25.12",
+    "typescript": "5.9.3"
+  }
+}

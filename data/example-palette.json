@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "name": "Чернила и лимон",
+  "background": ["#F3F0E4", "#C1CFDB", "#4A6075", "#162535"],
+  "object": ["#F9E477", "#F4A188", "#ABD9BD", "#FFFFFF"]
+}

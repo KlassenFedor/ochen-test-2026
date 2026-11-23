@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Конструктор иллюстраций</title>
+<style>
+  :root {
+    --bg:var(--figma-color-bg,#fff); --muted:var(--figma-color-bg-secondary,#f5f4f8);
+    --text:var(--figma-color-text,#201b29); --quiet:var(--figma-color-text-secondary,#605b6b);
+    --line:var(--figma-color-border,#e2dfe7); --primary:var(--figma-color-bg-brand,#6e50cc);
+    --on-primary:var(--figma-color-text-onbrand,#fff); --error:var(--figma-color-text-danger,#b42636);
+    font:12px/1.4 Inter,system-ui,sans-serif; color:var(--text); background:var(--bg);
+  }
+  *, *::before, *::after { box-sizing:border-box; }
+  body { margin:0; padding:16px; }
+  h1 { margin:0 0 13px; font-size:19px; font-weight:650; letter-spacing:-.03em; }
+  h2 { margin:0; font-size:13px; font-weight:650; }
+  form, section { display:grid; gap:10px; margin:0; }
+  section { border-top:1px solid var(--line); margin-top:14px; padding-top:12px; }
+  label { display:grid; gap:4px; min-width:0; font-weight:550; }
+  textarea, select, button { font:inherit; color:inherit; }
+  textarea, select, button, .download {
+    border:1px solid var(--line); border-radius:6px; background:var(--bg);
+  }
+  textarea { padding:7px 9px; resize:vertical; min-height:52px; max-height:110px; width:100%; }
+  select { width:100%; padding:6px; height:32px; }
+  button, .download { padding:6px 9px; min-height:32px; cursor:pointer; font-weight:550; }
+  button:hover:not(:disabled), .download:hover { background:var(--muted); }
+  button:disabled { opacity:.45; cursor:default; }
+  :focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
+  .primary { background:var(--primary); border-color:var(--primary); color:var(--on-primary); }
+  .primary:hover:not(:disabled) { background:var(--primary); filter:brightness(1.09); }
+  .segmented { border:0; margin:0; padding:3px; min-width:0; background:var(--muted); border-radius:7px; }
+  .segmented-inner { display:grid; grid-template-columns:1fr 1fr; }
+  .segmented label { display:block; position:relative; text-align:center; cursor:pointer; }
+  .segmented input, .sr-only { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); }
+  .segmented span { display:block; padding:5px; border:1px solid transparent; border-radius:5px; }
+  .segmented input:checked + span { background:var(--bg); border-color:var(--line); }
+  .segmented input:focus-visible + span { outline:2px solid var(--primary); outline-offset:-2px; }
+  .two, .flex, .scene-actions { display:grid; gap:7px; align-items:end; }
+  .two { grid-template-columns:1.15fr 1fr; }
+  .flex { grid-template-columns:minmax(0,1fr) auto; }
+  .scene-actions { grid-template-columns:1fr 1fr; }
+  .quiet, #status { color:var(--quiet); margin:0; overflow-wrap:anywhere; }
+  #selection { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-height:17px; }
+  #status { margin-top:10px; min-height:17px; }
+  #status[data-error=true] { color:var(--error); }
+  .download { display:inline-block; margin-top:7px; color:var(--text); }
+  [hidden] { display:none!important; }
+</style>
+</head>
+<body>
+  <h1>Конструктор иллюстраций</h1>
+  <form id="compose">
+    <fieldset class="segmented">
+      <legend class="sr-only">Способ подбора</legend>
+      <div class="segmented-inner">
+        <label><input name="mode" type="radio" value="names" checked><span>Названия предметов</span></label>
+        <label><input name="mode" type="radio" value="title"><span>Заголовок</span></label>
+      </div>
+    </fieldset>
+    <label><span id="query-label">Предметы через запятую</span>
+      <textarea id="query" rows="2" maxlength="4096" required placeholder="Книга, телефон" aria-describedby="query-hint"></textarea>
+    </label>
+    <p id="query-hint" class="quiet"></p>
+    <div class="two">
+      <label>Формат
+        <select id="format">
+          <option value="square">Квадрат</option>
+          <option value="horizontal">Горизонталь</option>
+          <option value="vertical">Вертикаль</option>
+        </select>
+      </label>
+      <label>Детализация
+        <select id="size">
+          <option value="large">L · подробная</option>
+          <option value="small">S · упрощённая</option>
+        </select>
+      </label>
+    </div>
+    <div class="flex">
+      <label>Палитра<select id="palette"></select></label>
+      <button id="import-palette" type="button">Импорт JSON</button>
+      <input type="file" id="palette-file" accept=".json,application/json" hidden>
+    </div>
+    <button id="build" class="primary" type="submit">Собрать композицию</button>
+  </form>
+
+  <section aria-labelledby="scene-heading">
+    <h2 id="scene-heading">Выделенная композиция</h2>
+    <p id="selection" class="quiet">Выделите кадр или предмет в нём.</p>
+    <div class="flex">
+      <select id="item" aria-label="Предмет для добавления"></select>
+      <button id="add" type="button" disabled>Добавить</button>
+    </div>
+    <div class="scene-actions">
+      <button id="alternative" type="button" disabled>Другой вариант</button>
+      <button id="role" type="button" disabled>Сменить роль</button>
+      <button id="apply" type="button" disabled>Применить палитру</button>
+      <button id="export" type="button" disabled>Экспорт SVG</button>
+    </div>
+  </section>
+  <p id="status" role="status" aria-live="polite"></p>
+  <a id="download" class="download" hidden>Скачать SVG</a>
+  <!-- UI_SCRIPT -->
+</body>
+</html>
