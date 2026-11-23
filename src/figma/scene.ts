@@ -4,7 +4,7 @@ import {
   type Format, type Size
 } from '../layout';
 import { isScheme, readPaletteSnapshot, record, type AppliedPalette, type PaletteChoice } from '../palette';
-import { svgFilename, validateSvg } from '../svg';
+import { prepareSvgExport, svgFilename } from '../svg';
 import type { Component, Drawable, Frame, Host, Instance, Node, Section, SolidPaint } from './host';
 import { commitPaints, loadColors, openLibrary, planPaints, type ColorLibrary } from './library';
 
@@ -271,8 +271,8 @@ export function createComposer(host: Host) {
     recolor, add, changeRole,
     async exportSvg() {
       const frame = requireFrame(host);
-      const svg = await frame.exportAsync({ format: 'SVG_STRING', svgIdAttribute: true, svgSimplifyStroke: false });
-      return { filename: svgFilename(frame.name), svg: validateSvg(svg) };
+      const bytes = await frame.exportAsync({ format: 'SVG', svgIdAttribute: true, svgSimplifyStroke: false });
+      return { filename: svgFilename(frame.name), svg: prepareSvgExport(bytes) };
     }
   };
 }

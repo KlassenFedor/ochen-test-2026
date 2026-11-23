@@ -6,7 +6,8 @@ const P = LIBRARY_PLAN;
 const created = { sections: [], nodes: [], variables: [], collections: [], styles: [] };
 const rgbKey = c => [c.r, c.g, c.b].map(v => v.toFixed(7)).join(',');
 const hex = c => '#' + [c.r, c.g, c.b].map(v => Math.round(v * 255).toString(16).padStart(2, '0')).join('').toUpperCase();
-const round = n => Math.round(n * 10000) / 10000;
+const coordinateTolerance = 0.002;
+const unitTolerance = 1e-6;
 
 figma.showUI(`<!doctype html><meta charset="utf-8"><style>
 body{font:14px system-ui;padding:16px;color:#181817}button{padding:10px;margin:8px 8px 8px 0}
@@ -35,24 +36,79 @@ function allNodes(root) {
   return result;
 }
 
-function fingerprint(root) {
-  // Ignore only the root position. Retain every internal transform and vector path.
-  const rows = allNodes(root).map((n, i) => {
-    const row = { type: n.type, width: round(n.width), height: round(n.height), visible: n.visible };
-    if (i) row.transform = n.relativeTransform.map(r => r.map(round));
+function artworkSnapshot(root) {
+  const rows = [];
+  const visit = (node, parent, path) => {
+    const { name, type, width, height, visible } = node;
+    const children = node.children || [];
+    const row = { type, width, height, visible, children: children.length };
+    if (parent) {
+      // Figma reports a group or boolean's children relative to the same
+      // container as that parent. Remove its offset before comparing artwork.
+      const sharedContainer = parent.type === 'GROUP' || parent.type === 'BOOLEAN_OPERATION';
+      row.transform = sharedContainer
+        ? matrixMultiply(inverse(parent.relativeTransform), node.relativeTransform)
+        : node.relativeTransform;
+      row.name = name;
+    }
     for (const field of ['isMask', 'maskType', 'opacity', 'blendMode', 'clipsContent', 'strokeWeight', 'strokeAlign', 'strokeCap', 'strokeJoin', 'cornerRadius', 'vectorPaths', 'effects']) {
-      if (field in n && typeof n[field] !== 'symbol') row[field] = n[field];
+      if (field in node) {
+        const value = node[field];
+        row[field] = typeof value === 'symbol' ? 'mixed' : value;
+      }
     }
-    for (const channel of ['fills', 'strokes']) if (channel in n && Array.isArray(n[channel])) {
-      row[channel] = n[channel].map(p => ({ type:p.type, visible:p.visible, opacity:p.opacity, blendMode:p.blendMode,
-        ...(p.type==='SOLID'?{rgb:rgbKey(p.color)}:{}) }));
+    for (const channel of ['fills', 'strokes']) {
+      if (!(channel in node)) continue;
+      const paints = node[channel];
+      row[channel] = Array.isArray(paints) ? paints.map(paint => ({
+        type: paint.type, visible: paint.visible ?? true, opacity: paint.opacity ?? 1,
+        blendMode: paint.blendMode ?? 'NORMAL',
+        ...(paint.type === 'SOLID' ? { color: paint.color } : {})
+      })) : 'mixed';
     }
-    return row;
-  });
-  const text = JSON.stringify(rows);
+    rows.push({ label: `${path} «${name}»`, row });
+    children.forEach((child, index) => visit(child, node, `${path}/${index + 1}`));
+  };
+  visit(root, null, '1');
+  return rows;
+}
+
+function near(expected, actual, tolerance) {
+  return Number.isFinite(expected) && Number.isFinite(actual) && Math.abs(expected - actual) <= tolerance;
+}
+
+function transformDifference(expected, actual) {
+  for (let row = 0; row < 2; row++) for (let col = 0; col < 3; col++) {
+    if (!near(expected[row][col], actual[row][col], col === 2 ? coordinateTolerance : unitTolerance)) {
+      return `transform[${row}][${col}]: ${expected[row][col]} → ${actual[row][col]}`;
+    }
+  }
+}
+
+function artworkDifference(expected, actual) {
+  if (expected.length !== actual.length) return `число слоёв: ${expected.length} → ${actual.length}`;
+  for (const [index, { row, label }] of expected.entries()) {
+    const candidate = actual[index].row;
+    for (const field of new Set([...Object.keys(row), ...Object.keys(candidate)])) {
+      const a = row[field], b = candidate[field];
+      if (field === 'transform' && a && b) {
+        const difference = transformDifference(a, b);
+        if (difference) return `${label}, ${difference}`;
+        continue;
+      }
+      if (JSON.stringify(a) === JSON.stringify(b)) continue;
+      if (['width', 'height', 'strokeWeight', 'cornerRadius'].includes(field) && near(a, b, coordinateTolerance)) continue;
+      const show = value => (JSON.stringify(value) ?? 'отсутствует').slice(0, 120);
+      return `${label}, ${field}: ${show(a)} → ${show(b)}`;
+    }
+  }
+}
+
+function fingerprint(snapshot) {
+  const text = JSON.stringify(snapshot.map(entry => entry.row));
   let hash = 2166136261;
   for (let i = 0; i < text.length; i++) hash = Math.imul(hash ^ text.charCodeAt(i), 16777619);
-  return { hash: (hash >>> 0).toString(16), nodes: rows.length, bytes: text.length };
+  return { hash: (hash >>> 0).toString(16), nodes: snapshot.length, bytes: text.length };
 }
 
 function matrixMultiply(a, b) {
@@ -192,16 +248,26 @@ function createVariant(task, section, sources) {
   component.name=task.family==='background'?`Size=${task.size}, Scheme=${task.scheme}`:`Size=${task.size}, Role=${task.role}`;
   component.resizeWithoutConstraints(source.width,source.height);component.fills=[];component.clipsContent=false;
   component.description=`${task.label}. Устойчивый ключ: ${task.key}. Исходные габариты и геометрия сохранены.`;
-  const transform=inverse(source.absoluteTransform),pieces=[];
-  for(const id of [task.sourceId,...task.companions]){
-    const original=sources.get(id),before=fingerprint(original),local=matrixMultiply(transform,original.absoluteTransform);
-    const clone=original.clone();created.nodes.push(clone);component.appendChild(clone);clone.relativeTransform=local;
-    clone.name=id===task.sourceId?'Artwork':`Source detail ${pieces.length}`;
-    const after=fingerprint(clone);
-    if(JSON.stringify(before)!==JSON.stringify(after))throw new Error(`Нарушена геометрия ${task.key}, исходник ${id}`);
-    pieces.push({sourceId:id,cloneId:clone.id,...after});
+  const transform = inverse(source.absoluteTransform);
+  for (const [index, id] of [task.sourceId, ...task.companions].entries()) {
+    const original = sources.get(id);
+    const before = artworkSnapshot(original);
+    const local = matrixMultiply(transform, original.absoluteTransform);
+    const clone = original.clone();
+    created.nodes.push(clone);
+    component.appendChild(clone);
+    clone.relativeTransform = local;
+    clone.name = index === 0 ? 'Artwork' : `Source detail ${index}`;
+    verifyArtwork(task.key, id, before, clone, local);
   }
-  return {component,pieces};
+  return component;
+}
+
+function verifyArtwork(key, sourceId, before, clone, local) {
+  const snapshot = artworkSnapshot(clone);
+  const difference = transformDifference(local, clone.relativeTransform) || artworkDifference(before, snapshot);
+  if (difference) throw new Error(`Нарушена геометрия ${key}, исходник ${sourceId}: ${difference}`);
+  return fingerprint(snapshot);
 }
 
 function gridSet(set) {
@@ -258,13 +324,17 @@ async function validateAndReport(section, work, sources, palettes, tokens) {
   for(const set of sets)if(set.children.length!==(set.name==='background'?6:4))throw new Error(`Неверное число вариантов ${set.name}`);
   for(let index=0;index<work.length;index++){
     const task=work[index],component=resolveComponent(section,task),source=sources.get(task.sourceId);
-    if(Math.abs(component.width-source.width)>0.001||Math.abs(component.height-source.height)>0.001)throw new Error(`Изменены габариты ${task.key}`);
+    if (!near(source.width, component.width, coordinateTolerance) || !near(source.height, component.height, coordinateTolerance)) {
+      throw new Error(`Изменены габариты ${task.key}: ${source.width} × ${source.height} → ${component.width} × ${component.height}`);
+    }
     if(component.children.length!==1+task.companions.length)throw new Error(`Неверный состав ${task.key}`);
     const pieces=[];
-    for(const [i,id]of [task.sourceId,...task.companions].entries()){
-      const original=fingerprint(sources.get(id)),copy=fingerprint(component.children[i]);
-      if(JSON.stringify(original)!==JSON.stringify(copy))throw new Error(`Геометрия ${task.key} отличается от оригинала`);
-      pieces.push({sourceId:id,...copy});
+    const transform = inverse(source.absoluteTransform);
+    for (const [i, id] of [task.sourceId, ...task.companions].entries()) {
+      const original = sources.get(id);
+      const local = matrixMultiply(transform, original.absoluteTransform);
+      const geometry = verifyArtwork(task.key, id, artworkSnapshot(original), component.children[i], local);
+      pieces.push({ sourceId: id, ...geometry });
     }
     const bindings=[],stack=[{node:component,path:[]}];
     const names=new Map();for(const [scheme,slots]of Object.entries(tokens.palettes))for(const [slot,v]of Object.entries(slots))names.set(v.id,{slot,scheme,fixed:false});
@@ -297,7 +367,7 @@ async function run() {
     const right=Math.max(0,...page.children.map(n=>n.x+n.width));
     section=figma.createSection();page.appendChild(section);created.sections.push(section);section.name=P.librarySection;section.x=right+600;section.y=-3376;
     const entries=[];
-    for(const task of work){const {component,pieces}=createVariant(task,section,sources);bindArtwork(component,task,palettes.find(p=>p.id===task.scheme),tokens);entries.push({task,component,pieces});}
+    for(const task of work){const component=createVariant(task,section,sources);bindArtwork(component,task,palettes.find(p=>p.id===task.scheme),tokens);entries.push({task,component});}
     const sets=[];
     for(const family of [...P.objects.map(o=>o.id),'background']){
       const set=figma.combineAsVariants(entries.filter(e=>e.task.family===family).map(e=>e.component),section);set.name=family;

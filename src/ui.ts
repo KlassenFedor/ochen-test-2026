@@ -128,7 +128,7 @@ window.addEventListener('message', event => {
     feedback(message.text, !message.ok);
     if (message.download) {
       if (downloadUrl) URL.revokeObjectURL(downloadUrl);
-      downloadUrl = URL.createObjectURL(new Blob([message.download.svg], { type: 'image/svg+xml' }));
+      downloadUrl = URL.createObjectURL(new Blob([message.download.svg], { type: 'image/svg+xml;charset=utf-8' }));
       download.href = downloadUrl;
       download.download = message.download.filename;
       download.hidden = false;

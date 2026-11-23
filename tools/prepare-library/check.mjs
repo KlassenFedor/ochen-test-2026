@@ -9,8 +9,8 @@ const figma = {
   variables: { setBoundVariableForPaint: (paint, field, variable) => ({ ...paint, boundVariables: { [field]: { type:'VARIABLE_ALIAS', id:variable.id } } }) }
 };
 const context = vm.createContext({ figma, LIBRARY_PLAN:plan, console });
-vm.runInContext(source.slice(0, source.lastIndexOf('\nrun().catch')) + '\nglobalThis.checked={tasks,inverse,matrixMultiply,fingerprint,bindArtwork};', context);
-const { tasks, inverse, matrixMultiply, fingerprint, bindArtwork } = context.checked;
+vm.runInContext(source.slice(0, source.lastIndexOf('\nrun().catch')) + '\nglobalThis.checked={tasks,inverse,matrixMultiply,artworkSnapshot,verifyArtwork,bindArtwork};', context);
+const { tasks, inverse, matrixMultiply, artworkSnapshot, verifyArtwork, bindArtwork } = context.checked;
 const normal = value => JSON.parse(JSON.stringify(value));
 
 // The inventory must cover both roles at both sizes, without losing an original.
@@ -28,12 +28,48 @@ assert.ok(Math.abs(relative[0][2]-1026.408)<1e-8);
 assert.ok(Math.abs(relative[1][2]-447.6165)<1e-8);
 assert.deepEqual(normal(matrixMultiply(inverse(original),original)),[[1,0,0],[0,1,0]]);
 
-// A root can move; a contour or an internal layer cannot change unnoticed.
-const vector={type:'VECTOR',width:20,height:30,visible:true,relativeTransform:[[1,0,3],[0,1,4]],vectorPaths:[{data:'M 0 0 L 20 30',windingRule:'NONZERO'}]};
-const group={type:'GROUP',width:20,height:30,visible:true,relativeTransform:[[1,0,100],[0,1,200]],children:[vector]};
-const before=fingerprint(group);group.relativeTransform[0][2]=0;assert.deepEqual(normal(fingerprint(group)),normal(before));
-vector.relativeTransform[0][2]=5;assert.notEqual(fingerprint(group).hash,before.hash);
-vector.relativeTransform[0][2]=3;vector.vectorPaths[0].data='M 0 0 L 19 30';assert.notEqual(fingerprint(group).hash,before.hash);
+// Figma reports children of groups and boolean operations in their container's
+// coordinates. Frame children keep their own local position.
+function bookAt(x, y) {
+  const position = (dx, dy) => [[1, 0, Math.fround(x + dx)], [0, 1, Math.fround(y + dy)]];
+  const vector = {
+    name: 'Контур', type: 'VECTOR', width: 20, height: 30, visible: true,
+    relativeTransform: position(3.12345, 4.23456), vectorPaths: [{ data: 'M 0 0 L 20 30', windingRule: 'NONZERO' }]
+  };
+  const boolean = {
+    name: 'Тень', type: 'BOOLEAN_OPERATION', width: 20, height: 30, visible: true,
+    relativeTransform: position(3.12345, 4.23456), children: [vector]
+  };
+  const frame = {
+    name: 'Рамка', type: 'FRAME', width: 30, height: 35, visible: true,
+    relativeTransform: position(4, 5), children: [
+      { ...vector, name: 'Деталь внутри фрейма', relativeTransform: [[1, 0, 2], [0, 1, 3]] }
+    ]
+  };
+  return {
+    name: x || y ? 'Книга' : 'Artwork', type: 'GROUP', width: 45, height: 50, visible: true,
+    relativeTransform: position(0, 0), children: [boolean, frame]
+  };
+}
+const book = bookAt(-5521.356, 3914.99);
+const clone = bookAt(0, 0);
+const expected = artworkSnapshot(book);
+const origin = [[1, 0, 0], [0, 1, 0]];
+const verify = () => verifyArtwork('book/large/main', '21:29965', expected, clone, origin);
+assert.equal(verify().nodes, 5);
+
+const contour = clone.children[0].children[0];
+contour.relativeTransform[0][2] += 0.05;
+assert.throws(verify, /Контур.*transform\[0\]\[2\]/);
+contour.relativeTransform[0][2] -= 0.05;
+contour.vectorPaths[0].data = 'M 0 0 L 19 30';
+assert.throws(verify, /Контур.*vectorPaths/);
+contour.vectorPaths[0].data = 'M 0 0 L 20 30';
+clone.relativeTransform[1][2] = 3;
+assert.throws(verify, /исходник 21:29965: transform\[1\]\[2\]/);
+clone.relativeTransform[1][2] = 0;
+clone.children[1].children[0].relativeTransform[0][2] = 3;
+assert.throws(verify, /Деталь внутри фрейма.*transform/);
 
 // Colour bindings must preserve opacity and distinguish a white background detail.
 const palette={background:[{r:0.8,g:0.7,b:0.9},{r:0.6,g:0.5,b:0.8},{r:0.4,g:0.3,b:0.7},{r:0.1,g:0.1,b:0.1}],object:[{r:1,g:0.9,b:0.7},{r:1,g:0.6,b:0.7},{r:1,g:0.9,b:0.9},{r:1,g:1,b:1}]};

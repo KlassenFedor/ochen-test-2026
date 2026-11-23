@@ -5,7 +5,7 @@ import { catalog, parseNames, suggestItems } from '../src/catalog';
 import { keepCenter, planLayout, planAddition } from '../src/layout';
 import { fromHex, parsePalette, readPaletteChoice } from '../src/palette';
 import { readCommand } from '../src/protocol';
-import { svgFilename, validateSvg } from '../src/svg';
+import { prepareSvgExport, svgFilename, validateSvg } from '../src/svg';
 import example from '../data/example-palette.json';
 
 const shape = (width: number, height: number, role: 'main' | 'background' = 'main') => ({ width, height, role });
@@ -101,4 +101,26 @@ test('SVG keeps vector effects but rejects raster and foreign HTML markup', () =
   }
   assert.throws(() => validateSvg('<svg>'), /неполный SVG/);
   assert.equal(svgFilename('Книга, телефон · L'), 'Книга-телефон-L.svg');
+});
+
+test('SVG preserves Unicode IDs and references even when the text encoding is misdetected', () => {
+  const title = 'Книга™📘 &amp; телефон';
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg">' +
+    '<!-- id="Книга" --><title>Книга</title><desc><![CDATA[Пример id="Книга"]]></desc>' +
+    '<defs><clipPath id="Обрезка"><path d="M0 0Z"/></clipPath></defs>' +
+    '<g id="' + title + '" clip-path="url(#Обрезка)"><path d="M1 1Z"/></g></svg>';
+  const out = prepareSvgExport(new TextEncoder().encode('\uFEFF' + svg));
+  const id = /clipPath id="([^"]+)"/.exec(out)![1];
+  const ref = /clip-path="url\(#([^)]+)\)"/.exec(out)![1];
+  assert.match(id, /^(&#x[0-9a-f]+;)+$/);
+  assert.equal(ref, id);
+  const decode = (value: string) => value.replace(/&#x([0-9a-f]+);/g, (_, hex) => String.fromCodePoint(parseInt(hex, 16)));
+  assert.equal(decode(id), 'Обрезка');
+  assert.equal(decode(/<g id="([^"]+)"/.exec(out)![1]), title);
+  assert.match(out, /<!-- id="Книга" --><title>Книга<\/title><desc><!\[CDATA\[Пример id="Книга"\]\]><\/desc>/);
+  assert.match(out, /<path d="M1 1Z"\/>/);
+});
+
+test('SVG rejects invalid UTF-8 instead of downloading corrupted characters', () => {
+  assert.throws(() => prepareSvgExport(Uint8Array.of(0x3c, 0xd0)), /UTF-8/);
 });

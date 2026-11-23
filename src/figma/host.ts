@@ -61,7 +61,7 @@ export interface Frame extends Container {
   fills: PaintList;
   clipsContent: boolean;
   resizeWithoutConstraints(width: number, height: number): void;
-  exportAsync(settings: {format: 'SVG_STRING'; svgIdAttribute: boolean; svgSimplifyStroke: boolean}): Promise<string>;
+  exportAsync(settings: {format: 'SVG'; svgIdAttribute: boolean; svgSimplifyStroke: boolean}): Promise<Uint8Array>;
 }
 
 export interface Component extends Container {

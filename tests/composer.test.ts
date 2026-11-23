@@ -57,7 +57,7 @@ class MockNode {
   getPluginData(key: string) { return this.data.get(key) ?? ''; }
   setPluginData(key: string, value: string) { this.data.set(key, value); }
   async getMainComponentAsync() { return this.master; }
-  async exportAsync(options: object) { this.exported = options; return this.svg; }
+  async exportAsync(options: object) { this.exported = options; return new TextEncoder().encode(this.svg); }
   clone(type = this.type) {
     const copy = new MockNode(type, this.name, this.width, this.height);
     copy.relativeTransform = structuredClone(this.relativeTransform);
@@ -295,7 +295,9 @@ test('small master, an added item, and SVG export use the current selected scene
   assert.equal(added.master, f.keys.get('headphones/small/main'));
   assert.deepEqual(added.children[0].fills[0].color, custom.palette.object[0]);
   assert.equal((await f.composer.exportSvg()).svg, frame.svg);
-  assert.equal(frame.exported.format, 'SVG_STRING');
+  assert.equal(frame.exported.format, 'SVG');
+  frame.svg = '<svg><g id="Книга"> <path d="M0 0Z"/> </g></svg>';
+  assert.match((await f.composer.exportSvg()).svg, /id="&#x41a;&#x43d;&#x438;&#x433;&#x430;"/);
   frame.svg = '<svg><image href="data:image/png;base64,a"/></svg>';
   await assert.rejects(f.composer.exportSvg(), /растровую вставку/);
 });
