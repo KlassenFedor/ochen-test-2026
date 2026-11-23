@@ -11,7 +11,7 @@ declare const figma: Host & {
 };
 
 const composer = createComposer(figma);
-figma.showUI(__html__, { width: 392, height: 645, themeColors: true });
+figma.showUI(__html__, { width: 408, height: 680, themeColors: true });
 let busy = false;
 const send = (message: Message) => figma.ui.postMessage(message);
 
@@ -38,11 +38,11 @@ figma.ui.onmessage = async (data: unknown) => {
       }
       case 'alternative':
         await composer.alternative();
-        text = 'Другой вариант создан рядом.';
+        text = 'Кадр с другой раскладкой создан рядом.';
         break;
       case 'palette':
-        await composer.recolor(command.choice);
-        text = 'Палитра применена к выделенной композиции.';
+        await composer.recolor(command.choice, command.sceneId);
+        text = 'Композиция перекрашена.';
         break;
       case 'add':
         itemName(command.id);

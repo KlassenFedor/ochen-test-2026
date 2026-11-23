@@ -16,7 +16,14 @@ type Scene = {
   layout: string; scale: number; title: string;
 };
 export type BuildOptions = { format: Format; size: Size; palette: PaletteChoice; title: string };
-export type SelectionState = { scene?: string; item?: { name: string; role: Item['role'] } };
+export type SelectionState = {
+  scene?: { id: string; name: string; palette: PaletteChoice };
+  item?: { name: string; role: Item['role'] };
+};
+
+function paletteChoice(color: AppliedPalette): PaletteChoice {
+  return color.scheme ? { kind: 'preset', scheme: color.scheme } : { kind: 'custom', palette: color.palette };
+}
 
 function sceneData(frame: Frame): Scene {
   const data = record(JSON.parse(frame.getPluginData(sceneKey)));
@@ -124,8 +131,12 @@ export function createComposer(host: Host) {
 
   function selection(): SelectionState {
     const frame = selectedFrame(host);
-    const item = frame ? selectedItem(host, frame)?.item : undefined;
-    return { scene: frame?.name, item: item ? { name: itemName(item.id), role: item.role } : undefined };
+    if (!frame) return {};
+    const selected = selectedItem(host, frame);
+    return {
+      scene: { id: frame.id, name: frame.name, palette: paletteChoice(sceneData(frame).color) },
+      item: selected ? { name: selected.node.name, role: selected.item.role } : undefined
+    };
   }
 
   async function makeScene(
@@ -179,8 +190,11 @@ export function createComposer(host: Host) {
     return frame;
   }
 
-  async function recolor(choice: PaletteChoice) {
+  async function recolor(choice: PaletteChoice, expectedSceneId?: string) {
     const frame = requireFrame(host);
+    if (expectedSceneId && frame.id !== expectedSceneId) {
+      throw new Error('Выделение изменилось. Выберите палитру для текущей композиции.');
+    }
     const colors = await loadColors(host);
     const data = sceneData(frame);
     const color = colors.applyChoice(choice);
@@ -264,9 +278,7 @@ export function createComposer(host: Host) {
       const frame = requireFrame(host);
       const data = sceneData(frame);
       const items = managedChildren(frame).flatMap(entry => entry.item ? [entry.item] : []);
-      const choice: PaletteChoice = data.color.scheme ? {kind: 'preset', scheme: data.color.scheme} :
-        {kind: 'custom', palette: data.color.palette};
-      return makeScene(items, data, choice, data.layout);
+      return makeScene(items, data, paletteChoice(data.color), data.layout);
     },
     recolor, add, changeRole,
     async exportSvg() {

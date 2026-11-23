@@ -5,7 +5,7 @@ import type { BuildOptions, SelectionState } from './figma/scene';
 export type Command =
   | { type: 'build'; mode: 'names' | 'title'; query: string; options: BuildOptions }
   | { type: 'add'; id: string }
-  | { type: 'palette'; choice: BuildOptions['palette'] }
+  | { type: 'palette'; sceneId: string; choice: BuildOptions['palette'] }
   | { type: 'ready' | 'alternative' | 'role' | 'export' };
 
 export type Message =
@@ -23,8 +23,11 @@ export function readCommand(value: unknown): Command {
     case 'add':
       if (typeof command.id === 'string') return { type: 'add', id: command.id };
       break;
-    case 'palette':
-      return { type: 'palette', choice: readPaletteChoice(command.choice) };
+    case 'palette': {
+      const choice = readPaletteChoice(command.choice);
+      if (typeof command.sceneId !== 'string' || !command.sceneId) throw new Error('Выделите композицию для перекраски.');
+      return { type: 'palette', sceneId: command.sceneId, choice };
+    }
     case 'build': {
       const opts = record(command.options);
       if (command.mode !== 'names' && command.mode !== 'title') break;

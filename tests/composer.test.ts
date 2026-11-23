@@ -249,6 +249,20 @@ test('palette preflight and a failing write both leave a previous scene intact',
   assert.equal(frame.getPluginData(sceneKey), before);
 });
 
+test('palette confirmation cannot recolor a different selected scene with the same name', async () => {
+  const f = fixture();
+  const first = await build(f);
+  const second = await build(f);
+  assert.equal(first.name, second.name);
+  assert.equal(f.composer.selection().scene.id, second.id);
+  const before = second.getPluginData(sceneKey);
+  await assert.rejects(f.composer.recolor(custom, first.id), /Выделение изменилось/);
+  assert.equal(second.getPluginData(sceneKey), before);
+  assert.deepEqual(f.composer.selection().scene.palette, violet);
+  await f.composer.recolor(custom, second.id);
+  assert.deepEqual(f.composer.selection().scene.palette, custom);
+});
+
 test('changing role keeps layer index, center, rotation and proportional scale', async () => {
   const f = fixture();
   const frame = await build(f);
