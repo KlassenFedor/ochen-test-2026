@@ -21,21 +21,13 @@ if (portableOnly) {
 const manifest = JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8'));
 if (args.length) manifest.id = args[1];
 else delete manifest.id;
-const docs = ['docs/Задача-и-решение.md', 'docs/Визуальная-проверка.md'];
-await Promise.all(docs.map(async file => {
-  try { await readFile(resolve(root, file)); }
-  catch (error) { throw new Error(`В архиве требуется ${file}.`, { cause: error }); }
-}));
 await import('./build.mjs');
 
 const artifacts = resolve(root, 'artifacts');
 await mkdir(artifacts, { recursive: true });
 const staging = await mkdtemp(resolve(artifacts, 'plugin-'));
 try {
-  const files = [
-    manifest.main, manifest.ui, 'tools/prepare-library/README.md',
-    'README.md', 'data/example-palette.json', 'data/layouts.json', ...docs
-  ];
+  const files = [manifest.main, manifest.ui, 'README.md', 'data/example-palette.json'];
   for (const file of files) {
     const destination = resolve(staging, file);
     await mkdir(dirname(destination), { recursive: true });
@@ -43,7 +35,6 @@ try {
   }
   await writeFile(resolve(staging, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
   const archive = resolve(staging, 'archive.zip');
-  // zipfile marks non-ASCII entry names as UTF-8 in both ZIP headers.
   await run('python3', ['-c', `
 import sys
 from zipfile import ZipFile, ZIP_DEFLATED

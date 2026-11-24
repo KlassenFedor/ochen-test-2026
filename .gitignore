@@ -12,6 +12,13 @@ coverage/
 .eslintcache
 /tmp/
 /artifacts/
+/.agent-monitor/
+
+# Working notes, brief and manual testing materials
+/docs/
+/Задача.pdf
+/Архитектура-плагина-Figma.docx
+/tools/prepare-library/README.md
 
 # Logs
 *.log
@@ -31,6 +38,7 @@ pnpm-debug.log*
 # OS and editor temporary files
 .DS_Store
 Thumbs.db
+*:Zone.Identifier
 *.swp
 *.swo
 *~
