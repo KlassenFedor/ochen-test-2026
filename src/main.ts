@@ -1,4 +1,5 @@
 import { itemName, parseNames, suggestItems } from './catalog';
+import { inflate } from 'pako/lib/inflate.js';
 import type { Host } from './figma/host';
 import { libraryState } from './figma/library';
 import { createPreparation } from './figma/prepare-library.js';
@@ -7,11 +8,12 @@ import { createComposer } from './figma/scene';
 import { readCommand, type Message } from './protocol';
 
 declare const __html__: string;
-declare const __PORTABLE_LIBRARY__: LibraryBundle | null | undefined;
+declare const __PORTABLE_LIBRARY__: string | null | undefined;
 declare const figma: Host & {
   showUI(html: string, options: { width: number; height: number; themeColors: boolean }): void;
   on(event: 'selectionchange' | 'currentpagechange' | 'close', listener: () => void): void;
   commitUndo(): void;
+  base64Decode(value: string): Uint8Array;
   ui: { onmessage: (data: unknown) => void; postMessage(message: Message): void };
 };
 
@@ -81,7 +83,8 @@ figma.ui.onmessage = async (data: unknown) => {
           if (closed) return;
           refreshLibrary = true;
           preparation = createPreparation(figma, text => send({ type: 'progress', text }));
-          await preparation.install(portable);
+          const bundle = JSON.parse(inflate(figma.base64Decode(portable), { to: 'string' })) as LibraryBundle;
+          await preparation.install(bundle);
           preparation = undefined;
           if (closed) return;
         }

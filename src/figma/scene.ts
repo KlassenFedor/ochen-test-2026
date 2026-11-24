@@ -1,10 +1,10 @@
 import { checkItemCount, itemName, type Item } from '../catalog';
 import {
   isFormat, isSize, keepCenter, planAddition, planLayout, transformedBounds,
-  type Format, type Size
+  type Format, type Rect, type Size
 } from '../layout';
 import { isScheme, readPaletteSnapshot, record, type AppliedPalette, type PaletteChoice } from '../palette';
-import { prepareSvgExport, svgFilename } from '../svg';
+import { prepareSvgExport, svgFilename, type SvgFrame } from '../svg';
 import type { Component, Container, Drawable, Frame, Host, Instance, Node, Page, Section, SolidPaint } from './host';
 import { commitPaints, loadColors, openLibrary, planPaints, type ColorLibrary } from './library';
 import { preserveOverrides } from './overrides';
@@ -13,6 +13,39 @@ const sceneKey = 'illustration-scene';
 const itemKey = 'illustration-item';
 const backgroundKey = 'illustration-background';
 const namespace = 'ochenIllustrationComposer';
+
+function svgFrame(frame: Frame): SvgFrame | undefined {
+  if (!frame.clipsContent) return undefined;
+  const inside = new Set<string>();
+  const matrix = frame.absoluteTransform;
+  if (matrix) {
+    const [[a, b, x], [c, d, y]] = matrix;
+    const determinant = a * d - b * c;
+    if (Math.abs(determinant) > 1e-9) {
+      const fits = ({ x, y, width, height }: Rect) =>
+        x >= 0 && y >= 0 && x + width <= frame.width && y + height <= frame.height;
+      const names = new Map<string, boolean>();
+      for (const node of frame.children.filter(child => child.visible)) {
+        const bounds = node.absoluteRenderBounds;
+        // Check geometry as well as rendered extents. Figma can return already
+        // clipped bounds when a layer overlaps the edge of its parent.
+        const local = bounds && transformedBounds([
+          [d / determinant, -b / determinant, (d * (bounds.x - x) - b * (bounds.y - y)) / determinant],
+          [-c / determinant, a / determinant, (a * (bounds.y - y) - c * (bounds.x - x)) / determinant]
+        ], bounds);
+        const contained = Boolean(local && local.x > 0 && local.y > 0 &&
+          local.x + local.width < frame.width && local.y + local.height < frame.height &&
+          fits(transformedBounds(node.relativeTransform, node)));
+        for (const name of [node.name, node.name.replace(/\s+/g, '_')]) {
+          names.set(name, (names.get(name) ?? true) && contained);
+        }
+      }
+      for (const [name, contained] of names) if (contained) inside.add(name);
+    }
+  }
+  return { name: frame.name, width: frame.width, height: frame.height, inside };
+}
+
 type Scene = {
   version: 1; format: Format; size: Size; color: AppliedPalette;
   layout: string; scale: number; title: string;
@@ -436,9 +469,10 @@ export function createComposer(host: Host) {
     recolor, add, changeRole,
     async exportSvg(expectedSceneId: string) {
       const frame = requireFrame(expectedSceneId);
+      const viewport = svgFrame(frame);
       const bytes = await frame.exportAsync({ format: 'SVG', svgIdAttribute: true, svgSimplifyStroke: false });
       requireFrame(expectedSceneId);
-      return { sceneId: frame.id, filename: svgFilename(frame.name), svg: prepareSvgExport(bytes) };
+      return { sceneId: frame.id, filename: svgFilename(frame.name), svg: prepareSvgExport(bytes, viewport) };
     }
   };
 }

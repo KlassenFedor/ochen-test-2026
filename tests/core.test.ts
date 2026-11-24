@@ -169,24 +169,55 @@ test('SVG needs well-formed XML with a vector outside resource definitions or a 
   assert.equal(validateSvg(reusable), reusable);
 });
 
-test('SVG preserves Unicode IDs and references even when the text encoding is misdetected', () => {
+test('SVG uses readable ASCII layer names and updates clip, mask and use references', () => {
   const title = 'Книга™📘 &amp; телефон';
   const svg = '<svg xmlns="http://www.w3.org/2000/svg">' +
     '<!-- id="Книга" --><title>Книга</title><desc><![CDATA[Пример id="Книга"]]></desc>' +
-    '<defs><clipPath id="Обрезка"><path d="M0 0Z"/></clipPath></defs>' +
-    '<g id="' + title + '" clip-path="url(#Обрезка)"><path d="M1 1Z"/></g></svg>';
+    '<defs><clipPath id="Обрезка"><path d="M0 0Z"/></clipPath><mask id="Маска"><use href="#Контур"/></mask></defs>' +
+    '<g id="' + title + '" clip-path="url(#Обрезка)" mask="url(#Маска)"><path id="Контур" d="M1 1Z"/></g></svg>';
   const out = prepareSvgExport(new TextEncoder().encode('\uFEFF' + svg));
   const id = /clipPath id="([^"]+)"/.exec(out)![1];
   const ref = /clip-path="url\(#([^)]+)\)"/.exec(out)![1];
-  assert.match(id, /^(&#x[0-9a-f]+;)+$/);
+  assert.equal(id, 'Obrezka');
   assert.equal(ref, id);
-  const decode = (value: string) => value.replace(/&#x([0-9a-f]+);/g, (_, hex) => String.fromCodePoint(parseInt(hex, 16)));
-  assert.equal(decode(id), 'Обрезка');
-  assert.equal(decode(/<g id="([^"]+)"/.exec(out)![1]), title);
+  assert.equal(/<g id="([^"]+)"/.exec(out)![1], 'KnigaTM-telefon');
+  assert.match(out, /mask="url\(#Maska\)"/);
+  assert.match(out, /<use href="#Kontur"\/>/);
   assert.match(out, /<!-- id="Книга" --><title>Книга<\/title><desc><!\[CDATA\[Пример id="Книга"\]\]><\/desc>/);
-  assert.match(out, /<path d="M1 1Z"\/>/);
+  assert.match(out, /<path id="Kontur" d="M1 1Z"\/>/);
+  assert.equal(validateSvg(out), out);
 });
 
+test('SVG makes distinct ID slugs for duplicate layers and protects existing ASCII IDs', () => {
+  const result = prepareSvgExport(new TextEncoder().encode('<svg><g id="Книга"><path d="M0 0Z"/></g>' +
+    '<g id="Kniga"><path d="M1 1Z"/></g><use href="#Книга"/><g id="Книга"><path d="M2 2Z"/></g></svg>'));
+  assert.deepEqual([...result.matchAll(/ id="([^"]+)"/g)].map(match => match[1]), ['Kniga-2', 'Kniga', 'Kniga-3']);
+  assert.match(result, /<use href="#Kniga-2"\/>/);
+});
+
+test('SVG keeps named objects as sibling groups and clips only layers that can overflow', () => {
+  const svg = '<svg width="100" height="80" viewBox="0 0 100 80" xmlns="http://www.w3.org/2000/svg">' +
+    '<g clip-path="url(#clip0)"><g id="Сцена"><rect width="100" height="80" fill="white"/>' +
+    '<g id="Фон"><path d="M-1 0L101 0L101 81Z"/></g>' +
+    '<g id="Книга"><path d="M20 20L30 40Z"/></g>' +
+    '<g id="Телефон"><path d="M45 20L50 30Z"/></g></g></g>' +
+    '<defs><clipPath id="clip0"><rect width="100" height="80"/></clipPath></defs></svg>';
+  const result = prepareSvgExport(new TextEncoder().encode(svg),
+    { name: 'Сцена', width: 100, height: 80, inside: new Set(['Книга', 'Телефон']) });
+  assert.match(result, /<rect width="100" height="80" fill="white"\/><g id="Fon-crop"><g clip-path="url\(#clip0\)"><g id="Fon"/);
+  assert.match(result, /<\/g><\/g><\/g><g id="Kniga"><path[^>]+\/><\/g><g id="Telefon">/);
+  assert.equal(validateSvg(result), result);
+});
+
+test('SVG preserves authored group effects and round viewport clipping', () => {
+  const frame = { name: 'Кадр', width: 100, height: 80, inside: new Set(['Книга']) };
+  const clipped = '<svg><g id="Кадр" clip-path="url(#c)"><g id="Книга"><path d="M0 0Z"/></g></g>' +
+    '<defs><clipPath id="c"><rect width="100" height="80" rx="10"/></clipPath></defs></svg>';
+  const result = prepareSvgExport(new TextEncoder().encode(clipped), frame);
+  assert.match(result, /<g id="Kadr" clip-path="url\(#c\)"><g id="Kniga">/);
+  const opacity = prepareSvgExport(new TextEncoder().encode(clipped.replace('<g id="Кадр"', '<g opacity=".5" id="Кадр"')), frame);
+  assert.match(opacity, /<g opacity=".5" id="Kadr" clip-path="url\(#c\)"><g id="Kniga">/);
+});
 test('SVG rejects invalid UTF-8 instead of downloading corrupted characters', () => {
   assert.throws(() => prepareSvgExport(Uint8Array.of(0x3c, 0xd0)), /UTF-8/);
 });

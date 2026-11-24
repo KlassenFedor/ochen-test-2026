@@ -1,6 +1,7 @@
 import { build } from 'esbuild';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+import { gzipSync } from 'node:zlib';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const html = await readFile(new URL('../src/ui.html', import.meta.url), 'utf8');
@@ -16,6 +17,12 @@ if (portable && (portable.version !== 1 || !Array.isArray(portable.variants) ||
     !Array.isArray(portable.palettes) || portable.palettes.length !== 3)) {
   throw new Error('data/portable-library.json must be the complete export of 46 masters and three palettes.');
 }
+const packedLibrary = portable
+  ? gzipSync(JSON.stringify(portable), { level: 9 }).toString('base64')
+  : null;
+const pakoLicense = await readFile(new URL('../node_modules/pako/LICENSE', import.meta.url), 'utf8');
+const pakoZlib = await readFile(new URL('../node_modules/pako/lib/zlib/inflate.js', import.meta.url), 'utf8');
+const zlibNotice = pakoZlib.split('\n\n')[1];
 
 const config = {
   absWorkingDir: root,
@@ -28,8 +35,8 @@ const config = {
 };
 const [main, ui] = await Promise.all([
   build({
-    ...config, entryPoints: ['src/main.ts'], define: { __PORTABLE_LIBRARY__: JSON.stringify(portable) },
-    banner: { js: '/*! Includes sax-js, Blue Oak Model License 1.0.0: https://blueoakcouncil.org/license/1.0.0 */' }
+    ...config, entryPoints: ['src/main.ts'], define: { __PORTABLE_LIBRARY__: JSON.stringify(packedLibrary) },
+    banner: { js: `/*! Includes sax-js, Blue Oak Model License 1.0.0: https://blueoakcouncil.org/license/1.0.0 */\n/*! pako\n${pakoLicense}*/\n${zlibNotice}` }
   }),
   build({ ...config, entryPoints: ['src/ui.ts'] })
 ]);

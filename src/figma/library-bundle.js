@@ -170,7 +170,7 @@ export async function restoreArtwork(host, attempt, parent, data, tokens, keyFor
       checkOpen();
     }
     if (Math.abs(node.width - data.width) > 0.001 || Math.abs(node.height - data.height) > 0.001) {
-      node.resizeWithoutConstraints(Math.max(0.01, data.width), Math.max(0.01, data.height));
+      node.resizeWithoutConstraints(Math.max(0.01, data.width), data.type === 'LINE' ? 0 : Math.max(0.01, data.height));
     }
     node.relativeTransform = data.transform;
   }

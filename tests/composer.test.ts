@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
+import { gzipSync } from 'node:zlib';
+import { inflate } from 'pako/lib/inflate.js';
 import { catalog, parseNames } from '../src/catalog';
 import { createPreparation } from '../src/figma/prepare-library.js';
 import { captureLibrary, type LibraryBundle } from '../src/figma/library-bundle.js';
@@ -26,6 +29,8 @@ class MockNode {
   private fillPaints: readonly Paint[] = [];
   strokes: readonly Paint[] = [];
   relativeTransform: Transform = [[1, 0, 0], [0, 1, 0]];
+  absoluteTransform?: Transform;
+  absoluteRenderBounds?: { x: number; y: number; width: number; height: number };
   visible = true;
   locked = false;
   clipsContent = false;
@@ -61,7 +66,11 @@ class MockNode {
     while (this.children.length) this.children[0].remove();
   }
   async loadAsync() { this.loaded = true; }
-  resizeWithoutConstraints(width: number, height: number) { this.width = width; this.height = height; }
+  resizeWithoutConstraints(width: number, height: number) {
+    if (this.type === 'LINE' && height !== 0) throw new Error('LineNode height must be zero');
+    this.width = width;
+    this.height = height;
+  }
   rescale(scale: number) { this.width *= scale; this.height *= scale; }
   getSharedPluginData(namespace: string, key: string) { return this.shared.get(namespace + '/' + key) ?? ''; }
   setSharedPluginData(namespace: string, key: string, value: string) { this.shared.set(namespace + '/' + key, value); }
@@ -343,9 +352,32 @@ test('small master, an added item, and SVG export use the current selected scene
   assert.equal((await f.composer.exportSvg(frame.id)).svg, frame.svg);
   assert.equal(frame.exported.format, 'SVG');
   frame.svg = '<svg><g id="Книга"> <path d="M0 0Z"/> </g></svg>';
-  assert.match((await f.composer.exportSvg(frame.id)).svg, /id="&#x41a;&#x43d;&#x438;&#x433;&#x430;"/);
+  assert.match((await f.composer.exportSvg(frame.id)).svg, /id="Kniga"/);
   frame.svg = '<svg><image href="data:image/png;base64,a"/></svg>';
   await assert.rejects(f.composer.exportSvg(frame.id), /растровую вставку/);
+});
+
+test('scene export uses its transform to keep the crop off in-bounds objects', async () => {
+  const f = fixture();
+  const frame = await build(f);
+  const [, book, phone] = frame.children;
+  frame.absoluteTransform = [[1, 0, 500], [0, 1, 250]];
+  book.x = 10;
+  book.y = 10;
+  book.absoluteRenderBounds = { x: 510, y: 260, width: book.width, height: book.height };
+  phone.x = -50;
+  phone.absoluteRenderBounds = { x: 500, y: 260, width: phone.width - 50, height: phone.height };
+  frame.svg = `<svg viewBox="0 0 ${frame.width} ${frame.height}">
+    <g id="${frame.name}"><rect width="${frame.width}" height="${frame.height}" fill="white"/>
+    <g clip-path="url(#clip)"><g id="Книга"><path d="M10 10L40 50Z"/></g>
+    <g id="Телефон"><path d="M-50 0L5 50Z"/></g></g></g>
+    <defs><clipPath id="clip"><rect width="${frame.width}" height="${frame.height}"/></clipPath></defs></svg>`;
+  const { svg, filename } = await f.composer.exportSvg(frame.id);
+  assert.equal(filename, 'Книга-телефон-L.svg');
+  assert.match(svg, /<g id="Kniga"><path/);
+  assert.match(svg, /<g id="Telefon-crop"><g clip-path="url\(#clip\)"><g id="Telefon">/);
+  assert.doesNotMatch(svg, /Kniga-crop|id="Kniga-telefon-L"/);
+  assert.deepEqual(frame.children.slice(1), [book, phone]);
 });
 
 test('stale scene and item IDs are rejected before editing or exporting', async () => {
@@ -620,11 +652,25 @@ function portableFixture() {
       this.currentPage.appendChild(vector);
       return vector;
     },
+    createLine() {
+      const line = new MockNode('LINE', 'Line', 100, 0);
+      this.currentPage.appendChild(line);
+      return line;
+    },
     group(nodes: MockNode[], parent: MockNode) {
       const group = new MockNode('GROUP');
       parent.appendChild(group);
       nodes.forEach(node => group.appendChild(node));
       return group;
+    },
+    union(nodes: MockNode[], parent: MockNode) {
+      const shape = new MockNode('BOOLEAN_OPERATION', 'Union');
+      parent.appendChild(shape);
+      nodes.forEach(node => shape.appendChild(node));
+      return shape;
+    },
+    subtract(nodes: MockNode[], parent: MockNode) {
+      return this.union(nodes, parent);
     },
     combineAsVariants(variants: MockNode[], parent: MockNode) {
       const set = new MockNode('COMPONENT_SET');
@@ -754,4 +800,27 @@ test('a portable installation that fails to commit leaves no library-page link',
   assert.deepEqual(f.drawing.children, []);
   assert.deepEqual(f.variables, []);
   assert.deepEqual(f.collections, []);
+});
+
+test('the recorded production assets survive compression and install into a blank file', async t => {
+  const data = await readFile('data/portable-library.json', 'utf8').catch(error => {
+    if (error.code !== 'ENOENT') throw error;
+  });
+  if (!data) {
+    t.skip('Original asset export is absent');
+    return;
+  }
+  const bundle = JSON.parse(inflate(gzipSync(data), { to: 'string' })) as LibraryBundle;
+  const f = portableFixture();
+  const host = f.host as unknown as Host & { commitUndo(): void };
+  await createPreparation(host, () => {}).install(bundle);
+  const all = (node: MockNode): MockNode[] => [node, ...node.children.flatMap(all)];
+  assert.equal(all(f.drawing).filter(node => node.type === 'COMPONENT').length, 46);
+  assert.equal(all(f.drawing).filter(node => node.type === 'LINE' && node.height === 0).length, 8);
+  assert.equal(all(f.drawing).filter(node => node.type === 'BOOLEAN_OPERATION').length, 12);
+  assert.ok(all(f.drawing).some(node => node.name === 'Artwork'));
+  const frame = await build(f);
+  assert.deepEqual(frame.children.map(node => node.name), ['Фон', 'Книга', 'Телефон']);
+  await f.composer.recolor({ kind: 'preset', scheme: 'peach' }, frame.id);
+  assert.equal((await f.composer.exportSvg(frame.id)).sceneId, frame.id);
 });

@@ -1,4 +1,4 @@
-import type { Dimensions, Transform } from '../layout';
+import type { Dimensions, Rect, Transform } from '../layout';
 import type { RGB } from '../palette';
 
 // Boundary shared by the adapter and the in-memory host used by tests.
@@ -38,6 +38,8 @@ export interface Drawable extends Node, Dimensions {
   visible: boolean;
   locked: boolean;
   relativeTransform: Transform;
+  readonly absoluteTransform?: Transform;
+  readonly absoluteRenderBounds?: Rect | null;
 }
 
 export interface Container extends Drawable {
