@@ -198,7 +198,7 @@ test('SVG makes distinct ID slugs for duplicate layers and protects existing ASC
 test('SVG keeps named objects as sibling groups and clips only layers that can overflow', () => {
   const svg = '<svg width="100" height="80" viewBox="0 0 100 80" xmlns="http://www.w3.org/2000/svg">' +
     '<g clip-path="url(#clip0)"><g id="Сцена"><rect width="100" height="80" fill="white"/>' +
-    '<g id="Фон"><path d="M-1 0L101 0L101 81Z"/></g>' +
+    '<g id="Фон"><path d="M-1 0L101 0L101 81Z" stroke="black"/></g>' +
     '<g id="Книга"><path d="M20 20L30 40Z"/></g>' +
     '<g id="Телефон"><path d="M45 20L50 30Z"/></g></g></g>' +
     '<defs><clipPath id="clip0"><rect width="100" height="80"/></clipPath></defs></svg>';
@@ -207,6 +207,28 @@ test('SVG keeps named objects as sibling groups and clips only layers that can o
   assert.match(result, /<rect width="100" height="80" fill="white"\/><g id="Fon-crop"><g clip-path="url\(#clip0\)"><g id="Fon"/);
   assert.match(result, /<\/g><\/g><\/g><g id="Kniga"><path[^>]+\/><\/g><g id="Telefon">/);
   assert.equal(validateSvg(result), result);
+});
+
+test('SVG splits the painted Figma frame clip and recovers the native mojibake layer names', () => {
+  const nativeName = (name: string) => String.fromCharCode(...new TextEncoder().encode(name));
+  const frame = { name: 'Книга, пазлы · L', width: 1080, height: 1080,
+    inside: new Set(['Книга', 'Пазлы']), layers: new Set(['Фон', 'Книга', 'Пазлы']) };
+  const clip = '<defs><clipPath id="clip0_6_4458"><rect width="1080" height="1080" fill="white"/></clipPath></defs>';
+  const artwork = (name: string, color: string, stroke = '') =>
+    `<g id="${nativeName(name)}"><path d="M20 20L30 40Z" fill="${color}"${stroke}/></g>`;
+  const svg = '<svg width="1080" height="1080" viewBox="0 0 1080 1080" fill="none" xmlns="http://www.w3.org/2000/svg">' +
+    `<g id="${nativeName(frame.name)}" clip-path="url(#clip0_6_4458)"><rect width="1080" height="1080" fill="#BEEBEB"/>` +
+    artwork('Фон', '#BEEBEB', ' stroke="black"') + artwork('Книга', '#181817') + artwork('Пазлы', '#FFD4F2') + '</g>' + clip + '</svg>';
+  const result = prepareSvgExport(new TextEncoder().encode(svg), frame);
+  assert.match(result, /<g id="Fon-crop"><g clip-path="url\(#clip0_6_4458\)"><g id="Fon">/);
+  assert.match(result, /<\/g><\/g><\/g><g id="Kniga"><path[^>]+\/><\/g><g id="Pazly">/);
+  assert.doesNotMatch(result, /<g id="Kniga-pazly-L"/);
+  assert.equal(validateSvg(result), result);
+
+  const ambiguous = prepareSvgExport(new TextEncoder().encode(
+    svg.replace('clip-path="url(#clip0_6_4458)"', 'clip-path="url(#clip0_6_4458)" opacity=".5"')
+  ), frame);
+  assert.match(ambiguous, /<g id="Kniga-pazly-L" clip-path="url\(#clip0_6_4458\)" opacity="\.5">/);
 });
 
 test('SVG preserves authored group effects and round viewport clipping', () => {
@@ -248,6 +270,19 @@ test('SVG retains namespace declarations on candidate frame and clip wrappers', 
     assert.match(result, /<use xlink:href="#p"\/>/);
     assert.equal(validateSvg(result), result);
   }
+});
+
+test('SVG keeps overlapping clipped items as separate groups and drops fully out-of-frame items', () => {
+  const defs = '<defs><clipPath id="c"><rect width="100" height="80" fill="white"/></clipPath></defs>';
+  const book = '<g id="Книга"><path d="M-20 10H70V65H-20Z" fill="#583673"/></g>';
+  const phone = '<g id="Телефон" transform="translate(40 25)"><path d="M0 0H70V70H0Z" fill="#903750"/></g>';
+  const outside = '<g id="Ручка" transform="translate(100 0)"><path d="M0 1H10V10H0Z"/></g>';
+  const frame = { name: 'Кадр', width: 100, height: 80, inside: new Set<string>(), layers: new Set(['Книга', 'Телефон', 'Ручка']) };
+  const clipped = (body: string) => new TextEncoder().encode(`<svg><g clip-path="url(#c)">${body}</g>${defs}</svg>`);
+  const svg = prepareSvgExport(clipped(book + phone + outside), frame);
+  assert.match(svg, /<g id="Kniga"><path d="M0 10L70 10L70 65L0 65L0 10Z" fill="#583673"\/><\/g><g id="Telefon"/);
+  assert.doesNotMatch(svg, /clip-path=|-crop|id="Ruchka"/);
+  assert.throws(() => prepareSvgExport(clipped(outside), frame), /нет векторного содержимого/);
 });
 
 test('SVG rejects invalid UTF-8 instead of downloading corrupted characters', () => {

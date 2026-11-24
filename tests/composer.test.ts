@@ -364,12 +364,12 @@ test('small master, an added item, and SVG export use the current selected scene
   await assert.rejects(f.composer.exportSvg(frame.id), /растровую вставку/);
 });
 
-test('scene export uses its transform to keep the crop off in-bounds objects', async () => {
+test('scene export uses rendered extents to keep the crop off in-bounds artwork', async () => {
   const f = fixture();
   const frame = await build(f);
   const [, book, phone] = frame.children;
   frame.absoluteTransform = [[1, 0, 500], [0, 1, 250]];
-  book.x = 10;
+  book.x = -10;
   book.y = 10;
   book.absoluteRenderBounds = { x: 510, y: 260, width: book.width, height: book.height };
   phone.x = -50;
@@ -377,13 +377,13 @@ test('scene export uses its transform to keep the crop off in-bounds objects', a
   frame.svg = `<svg viewBox="0 0 ${frame.width} ${frame.height}">
     <g id="${frame.name}"><rect width="${frame.width}" height="${frame.height}" fill="white"/>
     <g clip-path="url(#clip)"><g id="Книга"><path d="M10 10L40 50Z"/></g>
-    <g id="Телефон"><path d="M-50 0L5 50Z"/></g></g></g>
+    <g id="Телефон"><path d="M-50 10L50 10L50 50L-50 50Z"/></g></g></g>
     <defs><clipPath id="clip"><rect width="${frame.width}" height="${frame.height}"/></clipPath></defs></svg>`;
   const { svg, filename } = await f.composer.exportSvg(frame.id);
   assert.equal(filename, 'Книга-телефон-L.svg');
   assert.match(svg, /<g id="Kniga"><path/);
-  assert.match(svg, /<g id="Telefon-crop"><g clip-path="url\(#clip\)"><g id="Telefon">/);
-  assert.doesNotMatch(svg, /Kniga-crop|id="Kniga-telefon-L"/);
+  assert.match(svg, /<g id="Telefon"><path d="M0 10L50 10L50 50L0 50L0 10Z"\/>/);
+  assert.doesNotMatch(svg, /Kniga-crop|Telefon-crop|id="Kniga-telefon-L"/);
   assert.deepEqual(frame.children.slice(1), [book, phone]);
 });
 

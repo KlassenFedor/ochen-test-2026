@@ -1,7 +1,7 @@
 import { checkItemCount, itemName, type Item } from '../catalog';
 import {
   isFormat, isSize, keepCenter, planAddition, planLayout, transformedBounds,
-  type Format, type Rect, type Size
+  type Format, type Size
 } from '../layout';
 import { isScheme, readPaletteSnapshot, record, type AppliedPalette, type PaletteChoice } from '../palette';
 import { prepareSvgExport, svgFilename, type SvgFrame } from '../svg';
@@ -24,20 +24,17 @@ function svgFrame(frame: Frame): SvgFrame | undefined {
     const [[a, b, x], [c, d, y]] = matrix;
     const determinant = a * d - b * c;
     if (Math.abs(determinant) > 1e-9) {
-      const fits = ({ x, y, width, height }: Rect) =>
-        x >= 0 && y >= 0 && x + width <= frame.width && y + height <= frame.height;
       const names = new Map<string, boolean>();
       for (const node of visible) {
         const bounds = node.absoluteRenderBounds;
-        // Check geometry as well as rendered extents. Figma can return already
-        // clipped bounds when a layer overlaps the edge of its parent.
         const local = bounds && transformedBounds([
           [d / determinant, -b / determinant, (d * (bounds.x - x) - b * (bounds.y - y)) / determinant],
           [-c / determinant, a / determinant, (a * (bounds.y - y) - c * (bounds.x - x)) / determinant]
         ], bounds);
+        // Empty space in an instance's box doesn't need cropping. Keep the
+        // clip when the rendered extent touches an edge, including clipped bounds.
         const contained = Boolean(local && local.x > 0 && local.y > 0 &&
-          local.x + local.width < frame.width && local.y + local.height < frame.height &&
-          fits(transformedBounds(node.relativeTransform, node)));
+          local.x + local.width < frame.width && local.y + local.height < frame.height);
         for (const name of [node.name, node.name.replace(/\s+/g, '_')]) {
           names.set(name, (names.get(name) ?? true) && contained);
         }
