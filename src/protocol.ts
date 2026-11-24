@@ -1,6 +1,7 @@
 import { isFormat, isSize } from './layout';
 import { readPaletteChoice, record } from './palette';
 import type { BuildOptions, SelectionState } from './figma/scene';
+import type { LibraryState } from './figma/library';
 
 export type Command =
   | { type: 'build'; mode: 'names' | 'title'; query: string; options: BuildOptions }
@@ -8,11 +9,13 @@ export type Command =
   | { type: 'role'; sceneId: string; itemId: string }
   | { type: 'palette'; sceneId: string; choice: BuildOptions['palette'] }
   | { type: 'alternative' | 'export' | 'migrate'; sceneId: string }
-  | { type: 'ready' };
+  | { type: 'ready' | 'prepare-library' | 'verify-library' | 'export-library' | 'cancel-library' };
 
 export type Message =
   | { type: 'selection'; selection: SelectionState }
-  | { type: 'result'; ok: boolean; text: string; download?: { sceneId: string; filename: string; svg: string } };
+  | { type: 'library'; state: LibraryState; error?: string }
+  | { type: 'progress'; text: string }
+  | { type: 'result'; ok: boolean; text: string; report?: object; libraryBundle?: object; download?: { sceneId: string; filename: string; svg: string } };
 
 function readId(value: unknown, message: string): string {
   if (typeof value !== 'string' || !value.trim()) throw new Error(message);
@@ -23,7 +26,12 @@ export function readCommand(value: unknown): Command {
   const command = record(value);
   const sceneId = () => readId(command.sceneId, 'Выделите композицию.');
   switch (command.type) {
-    case 'ready': return { type: 'ready' };
+    case 'ready':
+    case 'prepare-library':
+    case 'verify-library':
+    case 'export-library':
+    case 'cancel-library':
+      return { type: command.type };
     case 'alternative':
     case 'export':
     case 'migrate':

@@ -1,59 +1,12 @@
-/* global figma, LIBRARY_PLAN */
-import { prepareSvgExport } from '../../src/svg.ts';
+import { prepareSvgExport } from '../svg';
+import P from '../../tools/prepare-library/library-plan.json';
+import { demoSectionName, findLibrarySections, libraryMetadata, librarySectionName, librarySections } from './library';
+import { applyArtwork, bundleExtras, validateBundle } from './library-bundle.js';
 
-const P = LIBRARY_PLAN;
-const created = { sections: [], nodes: [], variables: [], collections: [], styles: [] };
 const rgbKey = c => [c.r, c.g, c.b].map(v => v.toFixed(7)).join(',');
 const hex = c => '#' + [c.r, c.g, c.b].map(v => Math.round(v * 255).toString(16).padStart(2, '0')).join('').toUpperCase();
 const coordinateTolerance = 0.002;
 const unitTolerance = 1e-6;
-let closed = false;
-
-figma.showUI(`<!doctype html><meta charset="utf-8"><style>
-body{font:14px system-ui;padding:16px;color:#181817}button{padding:10px;margin:8px 8px 8px 0}
-pre{white-space:pre-wrap}img{width:100%;height:auto;border:1px solid #ddd}
-</style><h2>Подготовка библиотеки</h2><pre id="status">Проверка исходников…</pre>
-<button id="save" disabled>Скачать каталог и отчёт</button><button id="close">Отменить подготовку</button><img id="preview" hidden>
-<script>
-let report;
-onmessage=({data})=>{const m=data.pluginMessage;if(!m)return;
- if(m.status)document.getElementById('status').textContent=m.status;
- if(m.done)document.getElementById('close').textContent='Закрыть';
- if(m.report){report=m.report;document.getElementById('save').disabled=false;}
- if(m.preview){const img=document.getElementById('preview');img.src=URL.createObjectURL(new Blob([new Uint8Array(m.preview)],{type:'image/png'}));img.hidden=false;}
-};
-document.getElementById('save').onclick=()=>{const u=URL.createObjectURL(new Blob([JSON.stringify(report,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=u;a.download='figma-library.json';a.click();setTimeout(()=>URL.revokeObjectURL(u),1000);};
-document.getElementById('close').onclick=()=>parent.postMessage({pluginMessage:{type:'close'}},'*');
-</script>`, { width: 540, height: 640 });
-function rollback() {
-  const failures = [];
-  for (const kind of ['sections', 'nodes', 'styles', 'variables', 'collections']) {
-    const entries = created[kind].splice(0).reverse();
-    for (const entry of entries) {
-      try { if (!entry.removed) entry.remove(); }
-      catch (error) { failures.push(error); }
-    }
-  }
-  return failures;
-}
-
-function stop() {
-  closed = true;
-  const failures = rollback();
-  if (failures.length) console.error('Не удалось полностью откатить подготовку библиотеки', failures);
-  return failures.length > 0;
-}
-
-figma.on('close', stop);
-figma.ui.onmessage = m => {
-  if (m.type !== 'close') return;
-  const failed = stop();
-  figma.closePlugin(failed ? 'Откат неполный. Проверьте изменения в Figma.' : undefined);
-};
-const status = (message, done = false) => {
-  if (!closed) figma.ui.postMessage({ status: message, done });
-};
-const checkOpen = () => { if (closed) throw new Error('Подготовка отменена'); };
 
 function allNodes(root) {
   const result = [], stack = [root];
@@ -64,7 +17,7 @@ function allNodes(root) {
   return result;
 }
 
-function artworkSnapshot(root) {
+export function artworkSnapshot(root) {
   const rows = [];
   const visit = (node, parent, path) => {
     const { name, type, width, height, visible } = node;
@@ -139,21 +92,21 @@ function fingerprint(snapshot) {
   return { hash: (hash >>> 0).toString(16), nodes: snapshot.length, bytes: text.length };
 }
 
-function matrixMultiply(a, b) {
+export function matrixMultiply(a, b) {
   return [
     [a[0][0]*b[0][0]+a[0][1]*b[1][0], a[0][0]*b[0][1]+a[0][1]*b[1][1], a[0][0]*b[0][2]+a[0][1]*b[1][2]+a[0][2]],
     [a[1][0]*b[0][0]+a[1][1]*b[1][0], a[1][0]*b[0][1]+a[1][1]*b[1][1], a[1][0]*b[0][2]+a[1][1]*b[1][2]+a[1][2]]
   ];
 }
 
-function inverse(m) {
+export function inverse(m) {
   const d = m[0][0]*m[1][1]-m[0][1]*m[1][0];
   if (Math.abs(d) < 1e-10) throw new Error('Вырожденная матрица исходника');
   const a=m[1][1]/d,b=-m[0][1]/d,c=-m[1][0]/d,e=m[0][0]/d;
   return [[a,b,-a*m[0][2]-b*m[1][2]],[c,e,-c*m[0][2]-e*m[1][2]]];
 }
 
-function tasks() {
+export function tasks() {
   const result = [];
   for (const item of P.objects) for (const size of ['large', 'small']) for (const role of ['main', 'background']) {
     const key = `${item.id}/${size}/${role}`;
@@ -163,11 +116,12 @@ function tasks() {
   return result;
 }
 
-async function inspectSources(page, work) {
+async function inspectSources(figma, page, work, checkOpen) {
   const sources = new Map();
   const ids = new Set(work.flatMap(t => [t.sourceId, ...t.companions]));
   for (const id of ids) {
     const n = await figma.getNodeByIdAsync(id);
+    checkOpen();
     if (!n || !('absoluteTransform' in n) || n.width <= 0 || n.height <= 0) throw new Error(`Не найден или повреждён исходник ${id}`);
     let ancestor = n.parent;
     while (ancestor && ancestor.type !== 'PAGE') ancestor = ancestor.parent;
@@ -182,10 +136,11 @@ async function inspectSources(page, work) {
   return sources;
 }
 
-async function readPalettes() {
+async function readPalettes(figma, checkOpen) {
   const palettes = [];
   for (const entry of P.palettes) {
     const group = await figma.getNodeByIdAsync(entry.sourceId);
+    checkOpen();
     if (!group || !('children' in group)) throw new Error(`Не найдены образцы ${entry.id}`);
     const swatches = group.children.filter(n => n.type === 'RECTANGLE').sort((a,b) => a.x-b.x || a.y-b.y);
     if (swatches.length !== 8 || swatches.some(n => n.fills.length !== 1 || n.fills[0].type !== 'SOLID')) throw new Error(`Изменилась структура палитры ${entry.id}`);
@@ -194,7 +149,7 @@ async function readPalettes() {
   return palettes;
 }
 
-async function prepareTokens(palettes, extras) {
+export async function prepareTokens(figma, { created, checkOpen }, palettes, extras, reuseOnly = false) {
   const collections = await figma.variables.getLocalVariableCollectionsAsync();
   const variables = await figma.variables.getLocalVariablesAsync('COLOR');
   checkOpen();
@@ -202,6 +157,7 @@ async function prepareTokens(palettes, extras) {
     const found = collections.filter(c=>c.name===name);
     if (found.length>1) throw new Error(`Дублируется коллекция ${name}`);
     if (found.length) return found[0];
+    if (reuseOnly) throw new Error(`Не найдена коллекция «${name}».`);
     const c=figma.variables.createVariableCollection(name);
     created.collections.push(c); collections.push(c); c.renameMode(c.defaultModeId,'Value'); return c;
   };
@@ -215,6 +171,7 @@ async function prepareTokens(palettes, extras) {
       }
       return found[0];
     }
+    if (reuseOnly) throw new Error(`Не найдена переменная «${c.name}/${name}».`);
     const v=figma.variables.createVariable(name,c,'COLOR');
     created.variables.push(v); variables.push(v);
     v.setValueForMode(c.defaultModeId,value); v.scopes=scopes; v.setVariableCodeSyntax('WEB',`var(--${syntax})`);
@@ -287,7 +244,7 @@ function inspectPaintSlots(palettes, work, sources) {
   return extras;
 }
 
-function bindArtwork(root, task, palette, tokens) {
+export function bindArtwork(figma, root, task, palette, tokens) {
   const slots = paletteSlots(palette);
   const bindings=[],stack=[{node:root,path:[]}];
   while(stack.length){
@@ -307,7 +264,7 @@ function bindArtwork(root, task, palette, tokens) {
   return bindings;
 }
 
-function createVariant(task, section, sources) {
+function createVariant(figma, created, task, section, sources) {
   const source=sources.get(task.sourceId),component=figma.createComponent();created.nodes.push(component);section.appendChild(component);
   component.name=task.family==='background'?`Size=${task.size}, Scheme=${task.scheme}`:`Size=${task.size}, Role=${task.role}`;
   component.resizeWithoutConstraints(source.width,source.height);component.fills=[];component.clipsContent=false;
@@ -327,7 +284,7 @@ function createVariant(task, section, sources) {
   return component;
 }
 
-function verifyArtwork(key, sourceId, before, clone, local) {
+export function verifyArtwork(key, sourceId, before, clone, local) {
   const snapshot = artworkSnapshot(clone);
   const difference = transformDifference(local, clone.relativeTransform) || artworkDifference(before, snapshot);
   if (difference) throw new Error(`Нарушена геометрия ${key}, исходник ${sourceId}: ${difference}`);
@@ -341,10 +298,12 @@ function gridSet(set) {
   set.resizeWithoutConstraints(padding*2+columns*w+(columns-1)*gap,padding*2+Math.ceil(set.children.length/columns)*h+(Math.ceil(set.children.length/columns)-1)*gap);
 }
 
-async function makeOverview(section, entries, tokens) {
+async function makeOverview(figma, { created, checkOpen }, section, entries, tokens) {
   const label=await figma.getNodeByIdAsync('27:11478');
+  checkOpen();
   const font=label&&label.type==='TEXT'&&label.fontName!==figma.mixed?label.fontName:{family:'Inter',style:'Regular'};
   await figma.loadFontAsync(font);
+  checkOpen();
   const local=await figma.getLocalTextStylesAsync();
   checkOpen();
   const style=(name,size)=>{let s=local.find(s=>s.name===name);if(!s){s=figma.createTextStyle();created.styles.push(s);s.name=name;s.fontName=font;s.fontSize=size;}return s;};
@@ -381,7 +340,7 @@ function resolveComponent(section, task) {
   return nodes[0];
 }
 
-async function validateAndReport(section, work, sources, palettes, tokens) {
+async function validateAndReport({ checkOpen, status }, section, work, sources, palettes, tokens) {
   const variants=[],inspection=[];
   const expectedSets=new Set(work.map(t=>t.family));
   const sets=section.children.filter(n=>n.type==='COMPONENT_SET');
@@ -422,69 +381,218 @@ async function validateAndReport(section, work, sources, palettes, tokens) {
     variants.push({key:task.key,family:task.family,size:task.size,...(task.role?{role:task.role}:{}),scheme:task.scheme,sourceName:source.name,width:component.width,height:component.height,bindings});
     inspection.push({key:task.key,componentId:component.id,svgBytes:bytes.length,geometryVerified:true,rasterFree:true,pieces});
   }
-  return {version:1,fileKey:P.fileKey,pageName:'Библиотека компонентов',sectionName:P.librarySection,sectionId:section.id,resolver:{setName:'family',properties:{size:'Size',role:'Role',scheme:'Scheme'},note:'ID исходников используются только в inspection, не при поиске компонентов.'},objects:P.objects.map(({id,name})=>({id,name})),variants,palettes:palettes.map(p=>({id:p.id,name:p.name,background:p.background.map(hex),object:p.object.map(hex),sourceRgb:{background:p.background,object:p.object}})),fixedDetails:[...tokens.details.values()].map(d=>({name:d.name,color:hex(d.rgb),rgb:d.rgb,policy:'preserve'})),inspection,manualChecks:['Визуально сверить обзор с исходниками','Экспортировать сцену с книгой и телефоном и повторно импортировать SVG в Figma']};
+  return {version:1,fileKey:P.fileKey,pageName:section.parent.name,sectionName:librarySectionName,sectionId:section.id,resolver:{setName:'family',properties:{size:'Size',role:'Role',scheme:'Scheme'},note:'ID исходников используются только в inspection, не при поиске компонентов.'},objects:P.objects.map(({id,name})=>({id,name})),variants,palettes:palettes.map(p=>({id:p.id,name:p.name,background:p.background.map(hex),object:p.object.map(hex),sourceRgb:{background:p.background,object:p.object}})),fixedDetails:[...tokens.details.values()].map(d=>({name:d.name,color:hex(d.rgb),rgb:d.rgb,policy:'preserve'})),inspection,manualChecks:['Визуально сверить обзор с исходниками','Экспортировать сцену с книгой и телефоном и повторно импортировать SVG в Figma']};
 }
 
-function demoSection(page, library) {
-  const sections = page.children.filter(node => node.type === 'SECTION' && node.name === P.demoSection);
-  if (sections.length > 1) throw new Error(`Найдены дубликаты «${P.demoSection}»`);
+export function demoSection(figma, created, page, library) {
+  const sections = page.children.filter(node => node.type === 'SECTION' && node.name === demoSectionName);
+  if (sections.length > 1) throw new Error(`Найдены дубликаты «${demoSectionName}»`);
   if (!library || sections.length) return sections[0];
   const demo = figma.createSection();
   created.sections.push(demo);
   page.appendChild(demo);
-  demo.name = P.demoSection;
+  demo.name = demoSectionName;
   demo.x = library.x;
   demo.y = library.y + library.height + 400;
   demo.resizeWithoutConstraints(4200, 2600);
   return demo;
 }
 
-async function run() {
-  const page=await figma.getNodeByIdAsync(P.pageId);if(!page||page.type!=='PAGE')throw new Error('Страница исходников не найдена');
-  await page.loadAsync();checkOpen();await figma.setCurrentPageAsync(page);checkOpen();
-  const work=tasks(),sources=await inspectSources(page,work),palettes=await readPalettes();
-  checkOpen();
-  const prepared=page.children.filter(n=>n.type==='SECTION'&&n.name===P.librarySection);
-  if(prepared.length>1)throw new Error('Найдены дубликаты подготовленной библиотеки');
-  demoSection(page);
-  const tokens=await prepareTokens(palettes,inspectPaintSlots(palettes,work,sources));
-  checkOpen();
-  let section=prepared[0],overview;
-  if(!section){
-    status('Создание 46 мастер-компонентов…');
-    const right=Math.max(0,...page.children.map(n=>n.x+n.width));
-    section=figma.createSection();created.sections.push(section);page.appendChild(section);section.name=P.librarySection;section.x=right+600;section.y=-3376;
-    const entries=[];
-    for(const task of work){const component=createVariant(task,section,sources);bindArtwork(component,task,palettes.find(p=>p.id===task.scheme),tokens);entries.push({task,component});}
-    const sets=[];
-    for(const family of [...P.objects.map(o=>o.id),'background']){
-      const set=figma.combineAsVariants(entries.filter(e=>e.task.family===family).map(e=>e.component),section);created.nodes.push(set);set.name=family;
-      set.description=family==='background'?'Фоны из оригинала. Size: large/small; Scheme: violet/peach/turquoise.':`${P.objects.find(o=>o.id===family).name}. Size: large/small; Role: main/background. Ключ: ${family}/{Size}/{Role}.`;
-      gridSet(set);sets.push(set);
-    }
-    overview=await makeOverview(section,entries,tokens);checkOpen();
-    const cellW=Math.max(...sets.map(s=>s.width))+120,cellH=Math.max(...sets.map(s=>s.height))+160,top=overview.y+overview.height+160;
-    sets.forEach((set,i)=>{set.x=40+(i%2)*cellW;set.y=top+Math.floor(i/2)*cellH;});
-    section.resizeWithoutConstraints(Math.max(overview.width+80,cellW*2+80),top+Math.ceil(sets.length/2)*cellH+80);
-  }else overview=section.children.find(n=>n.type==='FRAME'&&n.name==='Обзор · 46 экземпляров');
-  if(!overview||allNodes(overview).filter(n=>n.type==='INSTANCE').length!==46)throw new Error('Обзор должен содержать 46 экземпляров');
-  demoSection(page, section);
-  const report=await validateAndReport(section,work,sources,palettes,tokens);
-  checkOpen();
-  figma.currentPage.selection=[overview];figma.viewport.scrollAndZoomIntoView([overview]);
-  // The mutation and structural/SVG validation are complete. Preview failure must
-  // not remove a successfully prepared library.
-  if (Object.values(created).some(entries => entries.length)) figma.commitUndo();
-  for (const entries of Object.values(created)) entries.length = 0;
-  status('Готово: 10 предметов × 4 варианта, 6 фонов, палитры и каталог.\nПроверьте обзор и повторный импорт SVG.', true);
-  figma.ui.postMessage({report});
-  try{const bytes=await overview.exportAsync({format:'PNG',constraint:{type:'WIDTH',value:1200}});if(!closed)figma.ui.postMessage({preview:Array.from(bytes)});}catch(error){if(!closed)console.warn('Не удалось отрисовать превью',error);}
-}
+export function createPreparation(figma, status) {
+  const created = { sections: [], nodes: [], variables: [], collections: [], styles: [] };
+  let cancelled = false;
+  let rollbackFailed = false;
+  let revertPageLink;
+  const checkOpen = () => {
+    if (cancelled) throw new Error('Подготовка отменена.');
+  };
 
-run().catch(error=>{
-  if (closed) return;
-  const failures = rollback();
-  console.error(error, ...failures);
-  const detail = failures.length ? 'Откат неполный. Проверьте изменения в Figma.' : 'Новые объекты неудачного запуска удалены; исходники сохранены.';
-  status(`Подготовка не завершена: ${error.message}\n${detail}`, true);
-});
+  function rollback() {
+    const failures = [];
+    if (revertPageLink) {
+      try { revertPageLink(); } catch (error) { failures.push(error); }
+      revertPageLink = undefined;
+    }
+    for (const kind of ['sections', 'nodes', 'styles', 'variables', 'collections']) {
+      for (const entry of created[kind].splice(0).reverse()) {
+        try { if (!entry.removed) entry.remove(); }
+        catch (error) { failures.push(error); }
+      }
+    }
+    if (failures.length) {
+      rollbackFailed = true;
+      console.error('Не удалось полностью откатить подготовку библиотеки', failures);
+    }
+  }
+
+  const attempt = { created, checkOpen, status };
+  function commit() {
+    if (Object.values(created).some(entries => entries.length)) figma.commitUndo();
+    for (const entries of Object.values(created)) entries.length = 0;
+    revertPageLink = undefined;
+  }
+
+  async function install(bundle) {
+    validateBundle(bundle);
+    const found = await findLibrarySections(figma);
+    checkOpen();
+    if (found?.masters.length) {
+      await prepare('setup');
+      return;
+    }
+    const page = found?.page ?? figma.currentPage;
+    if (found) demoSection(figma, created, page);
+    await figma.setCurrentPageAsync(page);
+    checkOpen();
+    status('Установка палитр…');
+    const tokens = await prepareTokens(figma, attempt, bundle.palettes, bundleExtras(bundle, rgbKey));
+    checkOpen();
+
+    const section = figma.createSection();
+    created.sections.push(section);
+    page.appendChild(section);
+    section.name = librarySectionName;
+    section.x = page.children.reduce((right, node) => node === section ? right : Math.max(right, node.x + node.width), 0) +
+      (page.children.length > 1 ? 160 : 0);
+    section.y = 0;
+    const families = new Map();
+    for (const [index, { key, tree }] of bundle.variants.entries()) {
+      checkOpen();
+      status(`Установка библиотеки · ${index + 1}/${bundle.variants.length}`);
+      const master = figma.createComponent();
+      created.nodes.push(master);
+      section.appendChild(master);
+      master.resizeWithoutConstraints(tree.width, tree.height);
+      await applyArtwork(figma, attempt, master, tree, tokens, rgbKey);
+      const [family, size, variant] = key.split('/');
+      master.name = `Size=${size}, ${family === 'background' ? 'Scheme' : 'Role'}=${variant}`;
+      const entries = families.get(family) ?? [];
+      entries.push(master);
+      families.set(family, entries);
+    }
+    checkOpen();
+    const sets = [...families].map(([family, masters]) => {
+      const set = figma.combineAsVariants(masters, section);
+      created.nodes.push(set);
+      set.name = family;
+      gridSet(set);
+      return set;
+    });
+    const cellWidth = Math.max(...sets.map(set => set.width)) + 120;
+    const cellHeight = Math.max(...sets.map(set => set.height)) + 120;
+    sets.forEach((set, i) => {
+      set.x = 40 + (i % 2) * cellWidth;
+      set.y = 40 + Math.floor(i / 2) * cellHeight;
+    });
+    section.resizeWithoutConstraints(cellWidth * 2 + 80, Math.ceil(sets.length / 2) * cellHeight + 80);
+    demoSection(figma, created, page, section);
+    if (!found) {
+      const { namespace, pageKey } = libraryMetadata;
+      const previous = figma.root.getSharedPluginData(namespace, pageKey);
+      figma.root.setSharedPluginData(namespace, pageKey, page.id);
+      revertPageLink = () => figma.root.setSharedPluginData(namespace, pageKey, previous);
+    }
+    commit();
+  }
+
+  async function prepare(mode) {
+    status('Проверка библиотеки…');
+    const { page, masters } = await librarySections(figma);
+    checkOpen();
+    if (masters.length > 1) throw new Error('Найдены дубликаты подготовленной библиотеки.');
+    let section = masters[0];
+    const demo = demoSection(figma, created, page);
+    if (mode === 'verify' && (!section || !demo)) throw new Error('Сначала нажмите «Подготовить библиотеку».');
+
+    if (section && mode === 'setup') {
+      // The existing masters work in copies too, independently of the original layer IDs.
+      if (!demo) {
+        await figma.setCurrentPageAsync(page);
+        checkOpen();
+        demoSection(figma, created, page, section);
+        commit();
+      }
+      return { text: 'Библиотека готова. Можно собирать композиции.' };
+    }
+
+    const work = tasks();
+    status('Проверка исходных слоёв и палитр…');
+    const sources = await inspectSources(figma, page, work, checkOpen);
+    const palettes = await readPalettes(figma, checkOpen);
+    checkOpen();
+    await figma.setCurrentPageAsync(page);
+    checkOpen();
+    const tokens = await prepareTokens(figma, attempt, palettes, inspectPaintSlots(palettes, work, sources), mode === 'verify');
+    checkOpen();
+
+    let overview = section?.children.find(n => n.type === 'FRAME' && n.name === 'Обзор · 46 экземпляров');
+    if (!section) {
+      status('Создание 46 мастер-компонентов…');
+      const right = Math.max(0, ...page.children.map(n => n.x + n.width));
+      section = figma.createSection();
+      created.sections.push(section);
+      page.appendChild(section);
+      section.name = librarySectionName;
+      section.x = right + 600;
+      section.y = -3376;
+      const entries = work.map(task => {
+        const component = createVariant(figma, created, task, section, sources);
+        bindArtwork(figma, component, task, palettes.find(p => p.id === task.scheme), tokens);
+        return { task, component };
+      });
+      const sets = [...P.objects.map(object => object.id), 'background'].map(family => {
+        const set = figma.combineAsVariants(entries.filter(e => e.task.family === family).map(e => e.component), section);
+        created.nodes.push(set);
+        set.name = family;
+        set.description = family === 'background'
+          ? 'Фоны из оригинала. Size: large/small; Scheme: violet/peach/turquoise.'
+          : `${P.objects.find(object => object.id === family).name}. Size: large/small; Role: main/background. Ключ: ${family}/{Size}/{Role}.`;
+        gridSet(set);
+        return set;
+      });
+      overview = await makeOverview(figma, attempt, section, entries, tokens);
+      checkOpen();
+      const cellW = Math.max(...sets.map(set => set.width)) + 120;
+      const cellH = Math.max(...sets.map(set => set.height)) + 160;
+      const top = overview.y + overview.height + 160;
+      sets.forEach((set, i) => {
+        set.x = 40 + (i % 2) * cellW;
+        set.y = top + Math.floor(i / 2) * cellH;
+      });
+      section.resizeWithoutConstraints(Math.max(overview.width + 80, cellW * 2 + 80),
+        top + Math.ceil(sets.length / 2) * cellH + 80);
+    }
+    if (!overview || allNodes(overview).filter(node => node.type === 'INSTANCE').length !== 46) {
+      throw new Error('Обзор должен содержать 46 экземпляров.');
+    }
+    demoSection(figma, created, page, section);
+    const report = await validateAndReport(attempt, section, work, sources, palettes, tokens);
+    checkOpen();
+    figma.currentPage.selection = [overview];
+    figma.viewport.scrollAndZoomIntoView([overview]);
+    commit();
+    return { text: 'Библиотека готова. В обзоре 40 вариантов предметов и 6 фонов.', report };
+  }
+
+  async function run(operation) {
+    try {
+      return await operation();
+    } catch (error) {
+      rollback();
+      if (rollbackFailed) {
+        throw new Error('Откат неполный. Проверьте изменения в Figma.', { cause: error });
+      }
+      if (cancelled) throw new Error('Подготовка отменена. Изменения удалены.');
+      throw new Error(`Не удалось подготовить библиотеку. ${error.message}`, { cause: error });
+    }
+  }
+
+  return {
+    run: mode => run(() => prepare(mode)),
+    install: bundle => run(() => install(bundle)),
+    cancel() {
+      cancelled = true;
+      rollback();
+    }
+  };
+}

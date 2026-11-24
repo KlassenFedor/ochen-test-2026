@@ -1,8 +1,0 @@
-{
-  "name": "Подготовка библиотеки иллюстраций",
-  "api": "1.0.0",
-  "main": "build/code.js",
-  "editorType": ["figma"],
-  "documentAccess": "dynamic-page",
-  "networkAccess": { "allowedDomains": ["none"] }
-}

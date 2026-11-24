@@ -29,6 +29,7 @@ class Element {
   focus() {}
   click() { if (!this.disabled) this.onclick?.(); }
   showModal() { this.opened = true; }
+  close() { this.opened = false; }
 }
 
 test('the panel stages imports in the matching tab and confirms recoloring for only the displayed frame', async () => {
@@ -67,9 +68,37 @@ test('the panel stages imports in the matching tab and confirms recoloring for o
     await import('../src/ui');
     assert.deepEqual(posted.splice(0), [{ type: 'ready' }]);
     assert.equal(get('scene-empty').hidden, false);
+    assert.equal(get('build').disabled, true);
+    host({ type: 'library', state: 'unavailable' });
+    assert.match(get('library-status').textContent, /Откройте файл задания/);
+    assert.equal(get('prepare-library').hidden, true);
+    host({ type: 'library', state: 'bundled' });
+    assert.equal(get('build').disabled, false);
+    assert.match(get('library-status').textContent, /Встроенная библиотека/);
+    assert.equal(get('prepare-library').hidden, true);
+    host({ type: 'library', state: 'needs-setup' });
+    get('prepare-library').click();
+    assert.deepEqual(posted.splice(0), [{ type: 'prepare-library' }]);
+    assert.equal(get('cancel-library').hidden, false);
+    host({ type: 'progress', text: 'Проверка SVG' });
+    assert.equal(get('status').textContent, 'Проверка SVG');
+    get('cancel-library').click();
+    assert.deepEqual(posted.splice(0), [{ type: 'cancel-library' }]);
+    host({ type: 'result', ok: false, text: 'Подготовка отменена.' });
+    assert.equal(get('cancel-library').hidden, true);
+    host({ type: 'library', state: 'ready' });
+    assert.equal(get('library-notice').hidden, true);
+    assert.equal(get('build').disabled, false);
     get('help-open').click();
     assert.ok(get('help').opened);
     assert.match(html, /Быстрый старт[\s\S]+Примеры[\s\S]+Частые вопросы/);
+    get('verify-library').click();
+    assert.equal(get('help').opened, false);
+    assert.deepEqual(posted.splice(0), [{ type: 'verify-library' }]);
+    host({ type: 'result', ok: true, text: 'Готово.', report: { version: 1 } });
+    const report = get('library-report');
+    assert.equal(report.hidden, false);
+    assert.deepEqual(await (await fetch(report.href!)).json(), { version: 1 });
 
     select('A', 'violet');
     assert.equal(get('scene-palette').value, 'violet');
@@ -145,6 +174,7 @@ test('the panel stages imports in the matching tab and confirms recoloring for o
     host(download);
     assert.equal(get('download').hidden, true, 'a late export must not attach a link to the next frame');
   } finally {
+    channel.emit('unload', undefined);
     for (const { key, before } of globals) {
       if (before) Object.defineProperty(globalThis, key, before);
       else Reflect.deleteProperty(globalThis, key);

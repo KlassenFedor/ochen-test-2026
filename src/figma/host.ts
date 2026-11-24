@@ -93,7 +93,12 @@ export interface Variable {
 }
 
 export interface Host {
-  readonly root: { readonly children: readonly Page[] };
+  readonly pluginId?: string;
+  readonly root: {
+    readonly children: readonly Page[];
+    getSharedPluginData?(namespace: string, key: string): string;
+    setSharedPluginData?(namespace: string, key: string, value: string): void;
+  };
   readonly currentPage: Page;
   skipInvisibleInstanceChildren: boolean;
   setCurrentPageAsync(page: Page): Promise<void>;

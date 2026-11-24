@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { parseNames } from '../src/catalog';
+import { catalog, parseNames } from '../src/catalog';
+import { createPreparation } from '../src/figma/prepare-library.js';
+import { captureLibrary, type LibraryBundle } from '../src/figma/library-bundle.js';
+import { libraryState } from '../src/figma/library';
 import type { Host, Paint, SolidPaint, Variable } from '../src/figma/host';
 import { createComposer } from '../src/figma/scene';
 import type { Transform } from '../src/layout';
@@ -18,6 +21,8 @@ class MockNode {
   overrides: { id: string; overriddenFields: string[] }[] = [];
   layoutMode = "NONE";
   opacity = 1;
+  vectorNetwork?: object;
+  async setVectorNetworkAsync(value: object) { this.vectorNetwork = value; }
   private fillPaints: readonly Paint[] = [];
   strokes: readonly Paint[] = [];
   relativeTransform: Transform = [[1, 0, 0], [0, 1, 0]];
@@ -73,6 +78,7 @@ class MockNode {
     copy.visible = this.visible;
     copy.locked = this.locked;
     copy.opacity = this.opacity;
+    copy.vectorNetwork = this.vectorNetwork;
     copy.data = new Map(this.data);
     copy.shared = new Map(this.shared);
     this.children.forEach(child => copy.appendChild(child.clone()));
@@ -154,6 +160,7 @@ function fixture() {
     }
   }
   const host = {
+    pluginId: 'fixture' as string | undefined,
     root: { children: [drawing, page] },
     currentPage: drawing,
     skipInvisibleInstanceChildren: true,
@@ -162,6 +169,11 @@ function fixture() {
       const frame = new MockNode('FRAME');
       this.currentPage.appendChild(frame);
       return frame;
+    },
+    createSection() {
+      const section = new MockNode('SECTION');
+      this.currentPage.appendChild(section);
+      return section;
     },
     variables: {
       async getLocalVariableCollectionsAsync() { return collections; },
@@ -470,6 +482,7 @@ test('old private metadata becomes readable by a different ID after explicit mig
   }
   assert.equal(f.composer.selection().scene.legacy, true);
   f.composer.migrate(frame.id);
+  f.host.pluginId = undefined;
   for (const [node, key] of [[frame, sceneKey], [frame.children[0], 'illustration-background'], [book, 'illustration-item']] as const) {
     node.setPluginData(key, '');
   }
@@ -478,6 +491,29 @@ test('old private metadata becomes readable by a different ID after explicit mig
   assert.equal(f.composer.selection().item.id, book.id);
   await f.composer.recolor(custom, frame.id);
   assert.deepEqual(book.children[0].fills[0].color, custom.palette.object[0]);
+});
+
+test('an installation without a plugin ID never uses Figma private data', async () => {
+  const f = fixture();
+  f.host.pluginId = undefined;
+  const read = MockNode.prototype.getPluginData;
+  const write = MockNode.prototype.setPluginData;
+  MockNode.prototype.getPluginData = MockNode.prototype.setPluginData = () => {
+    throw new Error('Private metadata requires a plugin ID');
+  };
+  try {
+    const frame = await build(f, 'книга');
+    const original = frame.children[1];
+    f.page.selection = [original];
+    assert.equal(f.composer.selection().item.id, original.id);
+    await f.composer.changeRole(frame.id, original.id);
+    await f.composer.recolor(custom, frame.id);
+    const alternate = await f.composer.alternative(frame.id);
+    assert.equal((await f.composer.exportSvg(alternate.id)).sceneId, alternate.id);
+  } finally {
+    MockNode.prototype.getPluginData = read;
+    MockNode.prototype.setPluginData = write;
+  }
 });
 
 test('oversized requests and manually duplicated items are checked before creating any objects', async () => {
@@ -495,9 +531,10 @@ test('oversized requests and manually duplicated items are checked before creati
 test('the main entry commits undo once per successful write, including migration, and skips failures and export', async () => {
   const f = fixture();
   const messages: any[] = [];
+  const listeners = new Map<string, () => void>();
   let commits = 0;
   const host = Object.assign(f.host, {
-    showUI() {}, on() {}, commitUndo() { commits++; },
+    showUI() {}, on(event: string, listener: () => void) { listeners.set(event, listener); }, commitUndo() { commits++; },
     ui: { onmessage: async (_message: unknown) => {}, postMessage(message: unknown) { messages.push(message); } }
   });
   const globals = Object.assign(globalThis, { figma: host, __html__: '' });
@@ -506,6 +543,7 @@ test('the main entry commits undo once per successful write, including migration
     const send = (message: object) => host.ui.onmessage(message);
     await send({ type: 'ready' });
     assert.equal(commits, 0);
+    assert.deepEqual(messages.find(message => message.type === 'library'), { type: 'library', state: 'ready' });
     await send({ type: 'build', mode: 'names', query: 'книга', options });
     const [frame] = f.page.selection;
     assert.equal(commits, 1);
@@ -523,8 +561,197 @@ test('the main entry commits undo once per successful write, including migration
     assert.equal(commits, 6);
     assert.deepEqual(messages.filter(message => message.type === 'result').map(message => message.ok),
       [true, true, false, true, true, true, true, true]);
+
+    f.demo.remove();
+    await send({ type: 'ready' });
+    assert.equal(messages.filter(message => message.type === 'library').at(-1).state, 'needs-setup');
+    await send({ type: 'prepare-library' });
+    assert.equal(messages.filter(message => message.type === 'library').at(-1).state, 'ready');
+    assert.equal(commits, 7);
+    const restored = f.page.children.find(node => node.name === 'Демо · Плагин')!;
+    restored.remove();
+    const setCurrentPageAsync = host.setCurrentPageAsync;
+    let resume!: () => void;
+    host.setCurrentPageAsync = () => new Promise(resolve => { resume = () => resolve(); });
+    const cancelled = send({ type: 'prepare-library' });
+    while (!resume) await Promise.resolve();
+    await send({ type: 'cancel-library' });
+    resume();
+    await cancelled;
+    assert.match(messages.filter(message => message.type === 'result').at(-1).text, /отменена/);
+    assert.equal(commits, 7);
+    resume = undefined!;
+    const closing = send({ type: 'prepare-library' });
+    while (!resume) await Promise.resolve();
+    const count = messages.length;
+    listeners.get('close')!();
+    resume();
+    await closing;
+    assert.equal(messages.length, count, 'native close stops posting status and results');
+    assert.equal(commits, 7);
+    host.setCurrentPageAsync = setCurrentPageAsync;
   } finally {
     Reflect.deleteProperty(globals, 'figma');
     Reflect.deleteProperty(globals, '__html__');
   }
+});
+
+function portableFixture() {
+  const f = fixture();
+  f.host.root.children.pop();
+  f.collections.length = 0;
+  f.variables.length = 0;
+  f.host.pluginId = undefined;
+  const shared = new Map<string, string>();
+  Object.assign(f.host.root, {
+    getSharedPluginData(namespace: string, key: string) { return shared.get(namespace + '/' + key) ?? ''; },
+    setSharedPluginData(namespace: string, key: string, value: string) { shared.set(namespace + '/' + key, value); }
+  });
+  let commits = 0;
+  const host = Object.assign(f.host, {
+    commitUndo() { commits++; },
+    createComponent() {
+      const component = new MockNode('COMPONENT');
+      this.currentPage.appendChild(component);
+      return component;
+    },
+    createVector() {
+      const vector = new MockNode('VECTOR');
+      this.currentPage.appendChild(vector);
+      return vector;
+    },
+    group(nodes: MockNode[], parent: MockNode) {
+      const group = new MockNode('GROUP');
+      parent.appendChild(group);
+      nodes.forEach(node => group.appendChild(node));
+      return group;
+    },
+    combineAsVariants(variants: MockNode[], parent: MockNode) {
+      const set = new MockNode('COMPONENT_SET');
+      parent.appendChild(set);
+      variants.forEach(variant => set.appendChild(variant));
+      return set;
+    }
+  });
+  Object.assign(host.variables, {
+    async getLocalVariableCollectionsAsync() { return [...f.collections]; },
+    async getLocalVariablesAsync() { return [...f.variables]; },
+    createVariableCollection(name: string) {
+      const collection = {
+        name, id: name, defaultModeId: 'base', renameMode() {},
+        remove() { f.collections.splice(f.collections.indexOf(collection), 1); }
+      };
+      f.collections.push(collection);
+      return collection;
+    },
+    createVariable(name: string, collection: { id: string }) {
+      const variable = {
+        name, id: collection.id + '/' + name, variableCollectionId: collection.id,
+        valuesByMode: {} as Record<string, unknown>, setVariableCodeSyntax() {},
+        setValueForMode(mode: string, value: unknown) { this.valuesByMode[mode] = value; },
+        remove() { f.variables.splice(f.variables.indexOf(variable), 1); }
+      };
+      f.variables.push(variable);
+      return variable;
+    }
+  });
+  const types = ['violet', 'peach', 'turquoise'];
+  const palettes = types.map((id, index) => ({
+    id, name: id, background: Array(4).fill({ r: 0.1 * (index + 1), g: 0, b: 0 }),
+    object: Array(4).fill({ r: 0.1 * (index + 1), g: 0.5, b: 0 })
+  }));
+  const base = { name: 'Sample', width: 100, height: 100, transform: [[1, 0, 0], [0, 1, 0]],
+    locked: false, visible: true, properties: {} };
+  const keys = [...catalog.flatMap(({ id }) =>
+    ['large', 'small'].flatMap(size => ['main', 'background'].map(role => `${id}/${size}/${role}`))),
+  ...['large', 'small'].flatMap(size => types.map(scheme => `background/${size}/${scheme}`))];
+  const bundle: LibraryBundle = { version: 1, palettes, variants: keys.map(key => {
+    const scheme = key.startsWith('background/') ? key.split('/')[2] : 'violet';
+    const slot = key.endsWith('/main') ? 'object/0' : 'background/0';
+    const palette = palettes.find(palette => palette.id === scheme)!;
+    const leaf = {
+      ...base, type: 'VECTOR', name: 'Контур', vector: {
+        vertices: [{ x: 0, y: 0 }, { x: 90, y: 0 }, { x: 90, y: 90 }],
+        segments: [{ start: 0, end: 1 }, { start: 1, end: 2 }, { start: 2, end: 0 }],
+        regions: [{ windingRule: 'NONZERO', loops: [[0, 1, 2]] }]
+      },
+      fills: [
+        { type: 'SOLID', color: palette[slot.split('/')[0]][0], opacity: 0.7, slot, scheme },
+        { type: 'SOLID', color: { r: 1, g: 1, b: 1 }, slot: 'fixed' }
+      ]
+    };
+    return { key, tree: { ...base, type: 'COMPONENT', name: key, fills: [],
+      children: [{ ...base, type: 'GROUP', name: 'Artwork', children: [leaf] }] } };
+  }) };
+  return { ...f, host, bundle, commits: () => commits };
+}
+
+test('the portable library installs in a blank file, retains geometry and color binding, and immediately supports composing', async () => {
+  const f = portableFixture();
+  const host = f.host as unknown as Host & { commitUndo(): void };
+  assert.equal(await libraryState(host), 'unavailable');
+  await createPreparation(host, () => {}).install(f.bundle);
+  assert.equal(await libraryState(host), 'ready');
+  assert.equal(f.host.root.children.length, 1);
+  assert.equal(f.host.currentPage, f.drawing);
+  assert.equal(f.commits(), 1);
+
+  const snapshot = await captureLibrary(host);
+  assert.equal(snapshot.variants.length, 46);
+  const leaf = f.bundle.variants[0].tree.children[0].children[0];
+  const exported = snapshot.variants[0].tree.children[0].children[0];
+  assert.equal(exported.fills[0].slot, 'object/0');
+  assert.equal(exported.fills[1].slot, 'fixed');
+  assert.deepEqual(exported.vector, leaf.vector);
+  const frame = await build(f, 'книга');
+  const item = frame.children[1];
+  const ink = item.children[0].children[0];
+  assert.equal(ink.fills[0].opacity, 0.7);
+  await f.composer.recolor({ kind: 'preset', scheme: 'peach' }, frame.id);
+  assert.equal(ink.fills[0].color.r, 0.2);
+  assert.equal(ink.fills[1].color.r, 1);
+  assert.equal((await f.composer.exportSvg(frame.id)).sceneId, frame.id);
+  await createPreparation(host, () => {}).install(f.bundle);
+  assert.equal(f.drawing.children.length, 2);
+  assert.equal(f.commits(), 1);
+});
+
+test('cancelling portable installation after writing masters rolls back sections, nodes and variables', async () => {
+  const f = portableFixture();
+  const host = f.host as unknown as Host & { commitUndo(): void };
+  let resume!: () => void;
+  const started = new Promise<void>(resolve => {
+    const create = f.host.createVector.bind(f.host);
+    f.host.createVector = () => {
+      const node = create();
+      node.setVectorNetworkAsync = () => new Promise<void>(release => {
+        resume = release;
+        resolve();
+      });
+      return node;
+    };
+  });
+  const preparation = createPreparation(host, () => {});
+  const installation = preparation.install(f.bundle);
+  await started;
+  assert.ok(f.variables.length);
+  assert.ok(f.drawing.children.length);
+  preparation.cancel();
+  resume();
+  await assert.rejects(installation, /отменена/);
+  assert.deepEqual(f.drawing.children, []);
+  assert.deepEqual(f.variables, []);
+  assert.deepEqual(f.collections, []);
+  assert.equal(await libraryState(host), 'unavailable');
+});
+
+test('a portable installation that fails to commit leaves no library-page link', async () => {
+  const f = portableFixture();
+  f.host.commitUndo = () => { throw new Error('Commit failed'); };
+  const host = f.host as unknown as Host & { commitUndo(): void };
+  await assert.rejects(createPreparation(host, () => {}).install(f.bundle), /Commit failed/);
+  assert.equal(await libraryState(host), 'unavailable');
+  assert.deepEqual(f.drawing.children, []);
+  assert.deepEqual(f.variables, []);
+  assert.deepEqual(f.collections, []);
 });

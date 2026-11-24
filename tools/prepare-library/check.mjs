@@ -5,24 +5,24 @@ import { build } from 'esbuild';
 import { fileURLToPath } from 'node:url';
 
 const plan = JSON.parse(await readFile(new URL('library-plan.json', import.meta.url), 'utf8'));
-const source = await readFile(new URL('main.js', import.meta.url), 'utf8');
 const figma = {
-  showUI() {}, ui: { postMessage() {} },
-  on(event, callback) { this[event] = callback; },
   variables: { setBoundVariableForPaint: (paint, field, variable) => ({ ...paint, boundVariables: { [field]: { type:'VARIABLE_ALIAS', id:variable.id } } }) }
 };
-const context = vm.createContext({ figma, LIBRARY_PLAN:plan, console });
+const context = vm.createContext({ console });
 const { outputFiles } = await build({
   stdin: {
-    contents: source.slice(0, source.lastIndexOf('\nrun().catch')) +
-      '\nglobalThis.checked={tasks,inverse,matrixMultiply,artworkSnapshot,verifyArtwork,bindArtwork,demoSection,prepareTokens,prepareSvgExport,checkOpen,created};',
+    contents: `
+      import * as preparation from '../../src/figma/prepare-library.js';
+      import { prepareSvgExport } from '../../src/svg';
+      globalThis.checked = { ...preparation, prepareSvgExport };
+    `,
     resolveDir: fileURLToPath(new URL('./', import.meta.url))
   },
   bundle: true, format: 'iife', write: false, external: ['stream', 'string_decoder']
 });
 vm.runInContext(outputFiles[0].text, context);
 const { tasks, inverse, matrixMultiply, artworkSnapshot, verifyArtwork, bindArtwork,
-  demoSection, prepareTokens, prepareSvgExport, checkOpen, created } = context.checked;
+  demoSection, prepareTokens, prepareSvgExport, createPreparation } = context.checked;
 const normal = value => JSON.parse(JSON.stringify(value));
 
 // The inventory must cover both roles at both sizes, without losing an original.
@@ -88,7 +88,7 @@ const palette={background:[{r:0.8,g:0.7,b:0.9},{r:0.6,g:0.5,b:0.8},{r:0.4,g:0.3,
 const slots=Object.fromEntries(['background','object'].flatMap(ch=>palette[ch].map((c,i)=>[`${ch}/${i}`,{id:`${ch}-${i}`}])));
 const tokens={palettes:{violet:slots},details:new Map([['1.0000000,1.0000000,1.0000000',{name:'detail/white',variable:{id:'fixed-white'}}]])};
 const artwork={type:'VECTOR',fills:[{type:'SOLID',color:palette.object[3],opacity:0.35}],strokes:[{type:'SOLID',color:palette.background[2],opacity:0.6}]};
-bindArtwork(artwork,{key:'background/large/violet',family:'background',scheme:'violet'},palette,tokens);
+bindArtwork(figma, artwork,{key:'background/large/violet',family:'background',scheme:'violet'},palette,tokens);
 assert.equal(artwork.fills[0].boundVariables.color.id,'fixed-white');assert.equal(artwork.fills[0].opacity,0.35);
 assert.equal(artwork.strokes[0].boundVariables.color.id,'background-2');assert.equal(artwork.strokes[0].opacity,0.6);
 console.log('Проверено: 46 вариантов и 2 отдельные детали; преобразования координат; контроль геометрии; назначения и прозрачность красок. Запуск в Figma не выполнялся.');
@@ -96,12 +96,12 @@ console.log('Проверено: 46 вариантов и 2 отдельные �
 const collision = { ...palette, object: [palette.background[2], ...palette.object.slice(1)] };
 const affected = () => ({ name: 'Контур', fills: [{ type: 'SOLID', color: palette.background[2] }] });
 const main = { key: 'book/large/main', family: 'book', role: 'main', scheme: 'violet' };
-assert.throws(() => bindArtwork(affected(), main, collision, tokens),
+assert.throws(() => bindArtwork(figma, affected(), main, collision, tokens),
   /book\/large\/main.*Контур.*fills\[1\].*background\/2, object\/0/);
 const background = affected();
-bindArtwork(background, { ...main, role: 'background' }, collision, tokens);
+bindArtwork(figma, background, { ...main, role: 'background' }, collision, tokens);
 assert.equal(background.fills[0].boundVariables.color.id, 'background-2');
-assert.throws(() => bindArtwork({
+assert.throws(() => bindArtwork(figma, {
   name: 'Фоновый контур', fills: [{ type: 'SOLID', color: palette.object[1] }]
 }, { ...main, role: 'background' }, palette, tokens), /Фоновый контур.*object\/1/);
 
@@ -120,7 +120,7 @@ const track = (list, value) => {
   list.push(entry);
   return entry;
 };
-let written = 0, closeSawRollback = false;
+let written = 0;
 Object.assign(figma.variables, {
   async getLocalVariableCollectionsAsync() { return [...collections]; },
   async getLocalVariablesAsync() { return [...variables]; },
@@ -135,8 +135,10 @@ Object.assign(figma.variables, {
     });
   }
 });
+const created = { variables: [], collections: [], sections: [] };
+const attempt = { created, checkOpen() {} };
 const fixed = new Map([['0.1230000,0.2340000,0.3450000', {r:0.123,g:0.234,b:0.345}]]);
-await prepareTokens(paletteFixture, fixed);
+await prepareTokens(figma, attempt, paletteFixture, fixed);
 // Treat the first batch as already committed and modify existing metadata.
 for (const entries of Object.values(created)) entries.length = 0;
 const existing = variables.find(variable => variable.name.startsWith('detail/') &&
@@ -144,37 +146,60 @@ const existing = variables.find(variable => variable.name.startsWith('detail/') 
 existing.description = 'Ручное описание';
 existing.scopes = ['SHAPE_FILL'];
 written = 0;
-await prepareTokens(paletteFixture, fixed);
+await prepareTokens(figma, attempt, paletteFixture, fixed);
 assert.equal(written, 0);
 assert.equal(existing.description, 'Ручное описание');
 assert.deepEqual(existing.scopes, ['SHAPE_FILL']);
 
 const page = {
-  children: [],
+  name: 'Библиотека компонентов', children: [], async loadAsync() {},
   appendChild(node) { this.children.push(node); }
 };
 figma.createSection = () => ({
   type: 'SECTION', resizeWithoutConstraints(w, h) { this.width = w; this.height = h; },
   remove() { this.removed = true; page.children.splice(page.children.indexOf(this), 1); }
 });
-const demo = demoSection(page, { x: 100, y: 160, height: 120 });
+const demo = demoSection(figma, created, page, { x: 100, y: 160, height: 120 });
 assert.equal(demo.name, plan.demoSection);
-assert.equal(demoSection(page, { x: 100, y: 160, height: 120 }), demo);
+assert.equal(demoSection(figma, created, page, { x: 100, y: 160, height: 120 }), demo);
 page.children.push({ type: 'SECTION', name: plan.demoSection });
-assert.throws(() => demoSection(page), /дубликаты/);
+assert.throws(() => demoSection(figma, created, page), /дубликаты/);
 page.children.pop();
 
-// Both the in-panel cancel and the native close run synchronous cleanup.
-await prepareTokens(paletteFixture, new Map([...fixed, ['0.2000000,0.3000000,0.4000000', {r:.2,g:.3,b:.4}]]));
-figma.closePlugin = () => {
-  closeSawRollback = demo.removed && removed.some(name => name.startsWith('detail/source-'));
-  figma.close();
-};
-figma.ui.onmessage({ type: 'close' });
-assert.ok(closeSawRollback);
+// A prepared copy can restore the demo without reading the original layer IDs.
+demo.remove();
+const masters = { type: 'SECTION', name: plan.librarySection, x: 100, y: 160, height: 120 };
+page.children.push(masters);
+figma.root = { children: [page] };
+figma.setCurrentPageAsync = async () => {};
+figma.getNodeByIdAsync = async () => { throw new Error('Original IDs were remapped'); };
+let commits = 0;
+figma.commitUndo = () => { commits++; };
+let status;
+let preparation = createPreparation(figma, text => { status = text; });
+assert.match((await preparation.run('setup')).text, /Библиотека готова/);
+assert.equal(page.children.filter(node => node.name === plan.demoSection).length, 1);
+assert.equal(commits, 1);
+assert.match(status, /Проверка/);
+preparation.cancel();
+assert.equal(page.children.length, 2, 'closing after commit preserves the new section');
+assert.match((await createPreparation(figma, () => {}).run('setup')).text, /готова/);
+assert.equal(commits, 1, 'a repeated setup does not touch the document');
+
+page.children[1].remove();
+let resume;
+figma.setCurrentPageAsync = () => new Promise(resolve => { resume = resolve; });
+preparation = createPreparation(figma, () => {});
+const pending = preparation.run('setup');
+while (!resume) await Promise.resolve();
+preparation.cancel();
+resume();
+await assert.rejects(pending, /Подготовка отменена/);
+assert.deepEqual(page.children, [masters]);
+
+figma.setCurrentPageAsync = async () => {};
+figma.commitUndo = () => { throw new Error('Commit failed'); };
+await assert.rejects(createPreparation(figma, () => {}).run('setup'), /Commit failed/);
+assert.deepEqual(page.children, [masters], 'a late failure rolls back the created section');
 assert.ok(variables.includes(existing));
-assert.throws(checkOpen, /отменена/);
-const native = demoSection(page, { x: 0, y: 0, height: 10 });
-figma.close();
-assert.equal(native.removed, true);
-console.log('Проверено: неоднозначные RGB, общий SVG-валидатор, сохранение переменных, восстановление демосекции и откат при двух способах закрытия.');
+console.log('Проверено: неоднозначные RGB, общий SVG-валидатор, сохранение переменных, восстановление демосекции из копии, отмена и откат.');

@@ -2,6 +2,7 @@ import { catalog, maxSceneItems, names } from './catalog';
 import { isFormat, isSize } from './layout';
 import { isScheme, parsePalette, schemes, type PaletteChoice } from './palette';
 import type { SelectionState } from './figma/scene';
+import type { LibraryState } from './figma/library';
 import type { Command, Message } from './protocol';
 
 function element<T extends HTMLElement>(id: string): T {
@@ -16,17 +17,21 @@ const buildPalette = element<HTMLSelectElement>('build-palette');
 const scenePalette = element<HTMLSelectElement>('scene-palette');
 const status = element('status');
 const download = element<HTMLAnchorElement>('download');
+const report = element<HTMLAnchorElement>('library-report');
 const options = new Map<string, PaletteChoice>();
 
 type View = 'create' | 'edit';
 let view: View = 'create';
 let tabChosen = false;
 let receivedSelection = false;
-let pending: Exclude<Command['type'], 'ready'> | 'import' | undefined;
+let pending: Exclude<Command['type'], 'ready' | 'cancel-library'> | 'import' | undefined;
 let mode: 'names' | 'title' = 'names';
 let selection: SelectionState = {};
+let library: LibraryState | undefined;
+let installingLibrary = false;
 let appliedPalette = '';
 let downloadUrl: string | undefined;
+let reportUrl: string | undefined;
 
 function paletteName(choice: PaletteChoice): string {
   return choice.kind === 'preset' ? schemes[choice.scheme] : choice.palette.name;
@@ -65,7 +70,13 @@ function switchView(next: View, focus = false) {
 
 function update() {
   const busy = Boolean(pending);
-  for (const id of ['build', 'import-build-palette']) button(id).disabled = busy;
+  button('build').disabled = busy || (library !== 'ready' && library !== 'bundled');
+  button('import-build-palette').disabled = busy;
+  button('prepare-library').hidden = library !== 'needs-setup';
+  button('prepare-library').disabled = busy;
+  button('verify-library').disabled = busy || library !== 'ready';
+  button('export-library').disabled = busy || library !== 'ready';
+  button('cancel-library').hidden = !installingLibrary && pending !== 'prepare-library' && pending !== 'verify-library';
   for (const id of ['alternative', 'export', 'import-scene-palette']) button(id).disabled = busy || !selection.scene;
   button('migrate').hidden = !selection.scene?.legacy;
   button('migrate').disabled = busy || !selection.scene?.legacy;
@@ -125,7 +136,9 @@ function send(command: Command) {
   if (pending) return;
   if (command.type === 'export') clearDownload();
   if (command.type !== 'ready') {
+    if (command.type === 'cancel-library') return;
     pending = command.type;
+    button('cancel-library').disabled = false;
     update();
     feedback('Выполняется…');
   }
@@ -150,6 +163,7 @@ for (const name of ['create', 'edit'] as const) {
 
 element<HTMLFormElement>('compose').addEventListener('submit', event => {
   event.preventDefault();
+  if (library !== 'ready' && library !== 'bundled') return;
   const palette = options.get(buildPalette.value);
   if (!isFormat(format.value) || !isSize(size.value) || !palette) return;
   send({
@@ -203,6 +217,21 @@ function connectImport(scope: 'build' | 'scene', picker: HTMLSelectElement) {
 connectImport('build', buildPalette);
 connectImport('scene', scenePalette);
 
+button('prepare-library').onclick = () => send({ type: 'prepare-library' });
+button('verify-library').onclick = () => {
+  element<HTMLDialogElement>('help').close();
+  send({ type: 'verify-library' });
+};
+button('export-library').onclick = () => {
+  element<HTMLDialogElement>('help').close();
+  send({ type: 'export-library' });
+};
+button('cancel-library').onclick = () => {
+  button('cancel-library').disabled = true;
+  feedback('Отменяем подготовку…');
+  parent.postMessage({ pluginMessage: { type: 'cancel-library' } }, '*');
+};
+
 items.onchange = update;
 scenePalette.onchange = update;
 for (const type of ['alternative', 'export', 'migrate'] as const) {
@@ -228,12 +257,38 @@ window.addEventListener('message', event => {
   if (!message) return;
   if (message.type === 'selection') {
     updateSelection(message.selection);
+  } else if (message.type === 'library') {
+    library = message.state;
+    element('library-notice').hidden = library === 'ready';
+    element('library-status').textContent = message.error ?? (library === 'bundled'
+      ? 'Встроенная библиотека загрузится при первой сборке композиции.'
+      : library === 'needs-setup'
+      ? 'Библиотеку нужно подготовить один раз в этом файле.'
+      : 'Откройте файл задания с библиотекой компонентов и запустите плагин в нём.');
+    update();
+  } else if (message.type === 'progress') {
+    if (pending === 'build' && library === 'bundled') {
+      installingLibrary = true;
+      update();
+    }
+    if (!button('cancel-library').disabled) feedback(message.text);
   } else if (message.type === 'result') {
     const operation = pending;
     pending = undefined;
+    installingLibrary = false;
     feedback(message.text, !message.ok);
     if (message.ok && operation === 'build' && view === 'create') switchView('edit', true);
-    if (message.ok && operation && operation !== 'export') clearDownload();
+    if (message.ok && operation && operation !== 'export' && operation !== 'export-library' && operation !== 'verify-library' &&
+        operation !== 'prepare-library') clearDownload();
+    const libraryData = message.libraryBundle ?? message.report;
+    if (libraryData) {
+      if (reportUrl) URL.revokeObjectURL(reportUrl);
+      reportUrl = URL.createObjectURL(new Blob([JSON.stringify(libraryData)], { type: 'application/json' }));
+      report.href = reportUrl;
+      report.download = message.libraryBundle ? 'portable-library.json' : 'figma-library.json';
+      report.textContent = message.libraryBundle ? 'Скачать portable-library.json' : 'Скачать отчёт о библиотеке';
+      report.hidden = false;
+    }
     if (message.download && message.download.sceneId === selection.scene?.id) {
       clearDownload();
       downloadUrl = URL.createObjectURL(new Blob([message.download.svg], { type: 'image/svg+xml;charset=utf-8' }));
@@ -247,6 +302,7 @@ window.addEventListener('message', event => {
 });
 window.addEventListener('unload', () => {
   if (downloadUrl) URL.revokeObjectURL(downloadUrl);
+  if (reportUrl) URL.revokeObjectURL(reportUrl);
 });
 updateMode();
 update();

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import plan from '../tools/prepare-library/library-plan.json';
 import { catalog, parseNames, suggestItems } from '../src/catalog';
+import { russianStem } from '../src/russian-stem';
 import { keepCenter, planLayout, planAddition } from '../src/layout';
 import { fromHex, parsePalette, readPaletteChoice } from '../src/palette';
 import { readCommand } from '../src/protocol';
@@ -31,6 +32,40 @@ test('title suggestions are bounded and word boundaries prevent substring matche
 });
 test('a longer exact catalog phrase outranks one-word names when the title has many matches', () => {
   assert.equal(suggestItems('Книга, пазлы, телефон, папка для документов')[0].id, 'folder');
+});
+test('the Russian stemmer keeps related grammatical forms together', () => {
+  for (const [word, stem] of [
+    ['книгами', 'книг'], ['смартфонами', 'смартфон'], ['важнейшими', 'важн'],
+    ['падением', 'паден'], ['перечитывая', 'перечитыв'], ['пазухи', 'пазух']
+  ] as const) assert.equal(russianStem(word), stem);
+});
+test('title recognition handles new inflections of names and phrases', () => {
+  assert.deepEqual(suggestItems('Кошельками и телефонами').map(item => item.id), ['phone', 'wallet']);
+  assert.deepEqual(suggestItems('Знаниями в дорогах').map(item => item.id), ['book', 'headphones']);
+  assert.deepEqual(suggestItems('Пролили свет').map(item => item.id), ['lamp']);
+});
+test('curated word families cover prefixes and alternating stems inside metaphors', () => {
+  for (const [title, ids] of [
+    ['Перезвони мне вечером', ['phone']],
+    ['Переписывала ночью', ['pen']],
+    ['Собирали по кусочкам', ['puzzle']],
+    ['Раскладывали по полкам', ['folder']],
+    ['Грызли гранит науки', ['book']]
+  ] as const) assert.deepEqual(suggestItems(title).map(item => item.id), ids, title);
+});
+test('new idioms choose useful motifs and keep exact phrases first among matches of the same length', () => {
+  assert.deepEqual(suggestItems('Отложили на чёрный день').map(item => item.id), ['coin', 'wallet']);
+  assert.deepEqual(suggestItems('Мы сошлись на одной волне').map(item => item.id), ['phone']);
+  assert.deepEqual(suggestItems('Тёмная погода. Светлая мысль и подписали документы.').map(item => item.id),
+    ['lamp', 'pen', 'folder']);
+  assert.deepEqual(suggestItems('Две стороны одной медали').map(item => item.id), ['coin']);
+});
+test('a shared substring or an unrelated broad stem does not by itself pick a subject', () => {
+  for (const title of ['Позвонок', 'Светодиодная панель', 'Чёрный квадрат', 'Звонкий голос']) {
+    assert.throws(() => suggestItems(title), /Подходящих предметов не найдено/, title);
+  }
+  assert.deepEqual(suggestItems('Чёрными чернилами').map(item => item.id), ['pen']);
+  assert.deepEqual(suggestItems('С пропущенными звонками').map(item => item.id), ['phone']);
 });
 test('very long lists of valid names stop before composition', () => {
   assert.equal(parseNames(Array(24).fill('ваза').join(', ')).length, 24);

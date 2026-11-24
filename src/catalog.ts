@@ -1,5 +1,8 @@
 import data from '../data/catalog.json';
 import themes from '../data/themes.json';
+import wordFamilies from '../data/word-families.json';
+import wordForms from '../data/word-forms.json';
+import { russianStem } from './russian-stem';
 
 export const catalog = data;
 export const names = catalog.map(item => item.name).join(', ');
@@ -42,23 +45,74 @@ export function parseNames(query: string): Item[] {
   return entries.map(word => ({ id: aliases.get(normalize(word))!, role: 'main' }));
 }
 
+const familyByStem = new Map<string, string>();
+const stemOverrides = new Map(Object.entries(wordForms));
+const wordStem = (word: string) => stemOverrides.get(word) ?? russianStem(word);
+for (const [family, forms] of Object.entries(wordFamilies)) {
+  for (const form of [family, ...forms]) {
+    const stem = wordStem(normalize(form));
+    const earlier = familyByStem.get(stem);
+    if (earlier && earlier !== family) throw new Error(`Неоднозначная группа слов: ${form}`);
+    familyByStem.set(stem, family);
+  }
+}
+
+function tokens(text: string) {
+  return normalize(text).split(' ').filter(Boolean).map(word => {
+    const stem = wordStem(word);
+    return { word, stem, family: familyByStem.get(stem) };
+  });
+}
+
+type Token = ReturnType<typeof tokens>[number];
+type Match = { length: number; quality: number; literal: boolean };
+
+const titleTerms = [
+  ...[...aliases].map(([term, id]) => ({ tokens: tokens(term), items: [id], literal: true })),
+  ...themes.flatMap(({ terms, items }) => terms.map(term => ({ tokens: tokens(term), items, literal: false })))
+].filter(term => term.tokens.length > 0);
+
+function tokenMatch(query: Token, term: Token): number {
+  if (query.word === term.word) return 3;
+  if (query.stem.length >= 3 && query.stem === term.stem) return 2;
+  if (query.family && query.family === term.family) return 1;
+  return 0;
+}
+
+function phraseMatch(query: Token[], term: Token[]): number {
+  let best = 0;
+  for (let start = 0; start <= query.length - term.length; start++) {
+    let weakest = 3;
+    for (const [offset, token] of term.entries()) {
+      weakest = Math.min(weakest, tokenMatch(query[start + offset]!, token));
+      if (!weakest) break;
+    }
+    if (weakest === 3) return weakest;
+    best = Math.max(best, weakest);
+  }
+  return best;
+}
+
+function compareMatch(a: Match, b: Match): number {
+  return a.length - b.length || a.quality - b.quality || Number(a.literal) - Number(b.literal);
+}
+
 export function suggestItems(query: string): Item[] {
-  const text = ` ${normalize(query)} `;
-  const scores = new Map<string, number>();
-  for (const [term, id] of aliases) {
-    if (text.includes(` ${term} `)) {
-      scores.set(id, Math.max(scores.get(id) ?? 0, 1 + 2 ** term.split(' ').length));
+  const input = tokens(query);
+  const scores = new Map<string, Match>();
+  for (const term of titleTerms) {
+    const quality = phraseMatch(input, term.tokens);
+    if (!quality) continue;
+    const match = { length: term.tokens.length, quality, literal: term.literal };
+    for (const id of term.items) {
+      const previous = scores.get(id);
+      if (!previous || compareMatch(match, previous) > 0) scores.set(id, match);
     }
   }
-  for (const theme of themes) {
-    const weight = Math.max(0, ...theme.terms.map(term => {
-      const words = normalize(term);
-      return text.includes(` ${words} `) ? 2 ** words.split(' ').length : 0;
-    }));
-    if (weight) for (const id of theme.items) scores.set(id, Math.max(scores.get(id) ?? 0, weight));
-  }
-  const result = catalog.map(item => ({ id: item.id, score: scores.get(item.id) ?? 0 }))
-    .filter(item => item.score > 0).sort((a, b) => b.score - a.score).slice(0, 3)
+  const result = catalog.flatMap(({ id }) => {
+    const score = scores.get(id);
+    return score ? [{ id, score }] : [];
+  }).sort((a, b) => compareMatch(b.score, a.score)).slice(0, 3)
     .map<Item>(({ id }, i) => ({ id, role: i === 0 ? 'main' : 'background' }));
   if (!result.length) throw new Error(`Подходящих предметов не найдено. Уточните заголовок или выберите названия из списка: ${names}.`);
   return result;

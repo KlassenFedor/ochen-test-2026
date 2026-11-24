@@ -23,93 +23,6 @@ export type SelectionState = {
   item?: { id: string; name: string; role: Item['role'] };
 };
 
-function metadata(node: Node, key: string): string {
-  return node.getSharedPluginData(namespace, key) || node.getPluginData(key);
-}
-
-function writeScene(frame: Frame, data: Scene) {
-  const value = JSON.stringify(data);
-  if (frame.getSharedPluginData(namespace, sceneKey) || !frame.getPluginData(sceneKey)) {
-    frame.setSharedPluginData(namespace, sceneKey, value);
-  } else {
-    frame.setPluginData(sceneKey, value);
-  }
-}
-
-function paletteChoice(color: AppliedPalette): PaletteChoice {
-  return color.scheme ? { kind: 'preset', scheme: color.scheme } : { kind: 'custom', palette: color.palette };
-}
-
-function sceneData(frame: Frame): Scene {
-  const data = record(JSON.parse(metadata(frame, sceneKey)));
-  const color = record(data.color);
-  if (data.version !== 1 || !isFormat(data.format) || !isSize(data.size) ||
-    typeof data.title !== 'string' || typeof data.layout !== 'string' ||
-    typeof data.scale !== 'number' || !Number.isFinite(data.scale) || data.scale <= 0 ||
-    (color.scheme !== undefined && !isScheme(color.scheme))) {
-    throw new Error('Метаданные сцены не поддерживаются этой версией плагина.');
-  }
-  return {
-    version: 1, format: data.format, size: data.size, layout: data.layout,
-    scale: data.scale, title: data.title,
-    color: { scheme: color.scheme, palette: readPaletteSnapshot(color.palette) }
-  };
-}
-
-function readItem(node: Node): Item | undefined {
-  const raw = metadata(node, itemKey);
-  if (!raw) return undefined;
-  const { id, role } = record(JSON.parse(raw));
-  if (typeof id !== 'string' || (role !== 'main' && role !== 'background')) throw new Error('Повреждены данные предмета.');
-  itemName(id);
-  return { id, role };
-}
-
-function sceneAncestor(node: Node): Frame | undefined {
-  for (let n: Node | null = node; n && n.type !== 'PAGE'; n = n.parent) {
-    if (n.type === 'FRAME' && metadata(n, sceneKey)) return n as Frame;
-  }
-}
-
-function selectedFrame(host: Host): Frame | undefined {
-  const nodes = host.currentPage.selection;
-  if (!nodes.length) return undefined;
-  const first = sceneAncestor(nodes[0]!);
-  return first && nodes.every(node => sceneAncestor(node) === first) ? first : undefined;
-}
-
-function selectedItem(host: Host, frame: Frame): { node: Instance; item: Item } | undefined {
-  if (host.currentPage.selection.length !== 1) return undefined;
-  for (let node: Node | null = host.currentPage.selection[0]!; node && node !== frame; node = node.parent) {
-    if (node.type !== 'INSTANCE') continue;
-    let parent = node.parent;
-    while (parent?.type === 'GROUP') parent = parent.parent;
-    if (parent !== frame) continue;
-    const item = readItem(node);
-    if (item) return { node: node as Instance, item };
-  }
-}
-
-function requireFrame(host: Host, expectedId: string): Frame {
-  const frame = selectedFrame(host);
-  if (!frame || frame.id !== expectedId) throw new Error('Выделение изменилось. Выберите нужную композицию и повторите действие.');
-  return frame;
-}
-
-function managedChildren(frame: Frame) {
-  function visit(node: Drawable, parentsVisible: boolean): { node: Instance; item?: Item; visible: boolean }[] {
-    const item = readItem(node);
-    const backdrop = metadata(node, backgroundKey) === '1';
-    const visible = parentsVisible && node.visible;
-    if (!item && !backdrop) {
-      return node.type === 'GROUP' ? (node as Container).children.flatMap(child => visit(child, visible)) : [];
-    }
-    if (node.type !== 'INSTANCE') throw new Error(`Верните слой «${node.name}» к экземпляру компонента.`);
-    return [{ node: node as Instance, item, visible }];
-  }
-  return frame.children.flatMap(node => visit(node, true));
-}
-
 function addInstance(frame: Frame, component: Component, scale: number, label: string, item?: Item) {
   const node = component.createInstance();
   try {
@@ -211,10 +124,97 @@ function useSwap(original: Instance, after: Component, scale: number) {
 export function createComposer(host: Host) {
   host.skipInvisibleInstanceChildren = false;
 
+  function metadata(node: Node, key: string): string {
+    return node.getSharedPluginData(namespace, key) || (host.pluginId ? node.getPluginData(key) : '');
+  }
+
+  function writeScene(frame: Frame, data: Scene) {
+    const value = JSON.stringify(data);
+    if (!host.pluginId || frame.getSharedPluginData(namespace, sceneKey) || !frame.getPluginData(sceneKey)) {
+      frame.setSharedPluginData(namespace, sceneKey, value);
+    } else {
+      frame.setPluginData(sceneKey, value);
+    }
+  }
+
+  function paletteChoice(color: AppliedPalette): PaletteChoice {
+    return color.scheme ? { kind: 'preset', scheme: color.scheme } : { kind: 'custom', palette: color.palette };
+  }
+
+  function sceneData(frame: Frame): Scene {
+    const data = record(JSON.parse(metadata(frame, sceneKey)));
+    const color = record(data.color);
+    if (data.version !== 1 || !isFormat(data.format) || !isSize(data.size) ||
+      typeof data.title !== 'string' || typeof data.layout !== 'string' ||
+      typeof data.scale !== 'number' || !Number.isFinite(data.scale) || data.scale <= 0 ||
+      (color.scheme !== undefined && !isScheme(color.scheme))) {
+      throw new Error('Метаданные сцены не поддерживаются этой версией плагина.');
+    }
+    return {
+      version: 1, format: data.format, size: data.size, layout: data.layout,
+      scale: data.scale, title: data.title,
+      color: { scheme: color.scheme, palette: readPaletteSnapshot(color.palette) }
+    };
+  }
+
+  function readItem(node: Node): Item | undefined {
+    const raw = metadata(node, itemKey);
+    if (!raw) return undefined;
+    const { id, role } = record(JSON.parse(raw));
+    if (typeof id !== 'string' || (role !== 'main' && role !== 'background')) throw new Error('Повреждены данные предмета.');
+    itemName(id);
+    return { id, role };
+  }
+
+  function sceneAncestor(node: Node): Frame | undefined {
+    for (let n: Node | null = node; n && n.type !== 'PAGE'; n = n.parent) {
+      if (n.type === 'FRAME' && metadata(n, sceneKey)) return n as Frame;
+    }
+  }
+
+  function selectedFrame(): Frame | undefined {
+    const nodes = host.currentPage.selection;
+    if (!nodes.length) return undefined;
+    const first = sceneAncestor(nodes[0]!);
+    return first && nodes.every(node => sceneAncestor(node) === first) ? first : undefined;
+  }
+
+  function selectedItem(frame: Frame): { node: Instance; item: Item } | undefined {
+    if (host.currentPage.selection.length !== 1) return undefined;
+    for (let node: Node | null = host.currentPage.selection[0]!; node && node !== frame; node = node.parent) {
+      if (node.type !== 'INSTANCE') continue;
+      let parent = node.parent;
+      while (parent?.type === 'GROUP') parent = parent.parent;
+      if (parent !== frame) continue;
+      const item = readItem(node);
+      if (item) return { node: node as Instance, item };
+    }
+  }
+
+  function requireFrame(expectedId: string): Frame {
+    const frame = selectedFrame();
+    if (!frame || frame.id !== expectedId) throw new Error('Выделение изменилось. Выберите нужную композицию и повторите действие.');
+    return frame;
+  }
+
+  function managedChildren(frame: Frame) {
+    function visit(node: Drawable, parentsVisible: boolean): { node: Instance; item?: Item; visible: boolean }[] {
+      const item = readItem(node);
+      const backdrop = metadata(node, backgroundKey) === '1';
+      const visible = parentsVisible && node.visible;
+      if (!item && !backdrop) {
+        return node.type === 'GROUP' ? (node as Container).children.flatMap(child => visit(child, visible)) : [];
+      }
+      if (node.type !== 'INSTANCE') throw new Error(`Верните слой «${node.name}» к экземпляру компонента.`);
+      return [{ node: node as Instance, item, visible }];
+    }
+    return frame.children.flatMap(node => visit(node, true));
+  }
+
   function selection(): SelectionState {
-    const frame = selectedFrame(host);
+    const frame = selectedFrame();
     if (!frame) return {};
-    const selected = selectedItem(host, frame);
+    const selected = selectedItem(frame);
     return {
       scene: { id: frame.id, name: frame.name, palette: paletteChoice(sceneData(frame).color),
         legacy: !frame.getSharedPluginData(namespace, sceneKey) },
@@ -244,7 +244,7 @@ export function createComposer(host: Host) {
       version: 1, format: options.format, size: options.size,
       color, layout: layout.id, scale: layout.scale, title: options.title
     };
-    if (variant) requireFrame(host, variant.source.id);
+    if (variant) requireFrame(variant.source.id);
     else if (host.currentPage !== library.page) await host.setCurrentPageAsync(library.page);
     const frame = host.createFrame();
     try {
@@ -286,7 +286,7 @@ export function createComposer(host: Host) {
   }
 
   async function recolor(choice: PaletteChoice, expectedSceneId: string) {
-    const frame = requireFrame(host, expectedSceneId);
+    const frame = requireFrame(expectedSceneId);
     const [colors, library] = await Promise.all([
       loadColors(host), choice.kind === 'preset' ? openLibrary(host) : undefined
     ]);
@@ -294,7 +294,7 @@ export function createComposer(host: Host) {
     const color = colors.applyChoice(choice);
     const entries = managedChildren(frame);
     const masters = await Promise.all(entries.map(entry => entry.node.getMainComponentAsync()));
-    requireFrame(host, expectedSceneId);
+    requireFrame(expectedSceneId);
     const currentEntries = managedChildren(frame);
     if (entries.length !== currentEntries.length || entries.some((entry, i) => entry.node !== currentEntries[i]?.node)) {
       throw new Error('Состав сцены изменился. Повторите применение палитры.');
@@ -341,9 +341,9 @@ export function createComposer(host: Host) {
   }
 
   async function add(item: Item, expectedSceneId: string) {
-    const frame = requireFrame(host, expectedSceneId);
+    const frame = requireFrame(expectedSceneId);
     const [library, colors] = await Promise.all([openLibrary(host), loadColors(host)]);
-    requireFrame(host, expectedSceneId);
+    requireFrame(expectedSceneId);
     const data = sceneData(frame);
     const master = library.object(data.size, item);
     const entries = managedChildren(frame).filter(entry => entry.item);
@@ -360,19 +360,19 @@ export function createComposer(host: Host) {
       node.remove();
       throw error;
     }
-    if (selectedFrame(host) === frame) host.currentPage.selection = [node];
+    if (selectedFrame() === frame) host.currentPage.selection = [node];
   }
 
   async function changeRole(expectedSceneId: string, expectedItemId: string) {
-    const frame = requireFrame(host, expectedSceneId);
-    const selected = selectedItem(host, frame);
+    const frame = requireFrame(expectedSceneId);
+    const selected = selectedItem(frame);
     if (!selected || selected.node.id !== expectedItemId) throw new Error('Выделение изменилось. Выберите нужный предмет.');
     const { node: original, item } = selected;
     const [library, colors, currentMaster] = await Promise.all([
       openLibrary(host), loadColors(host), original.getMainComponentAsync()
     ]);
-    requireFrame(host, expectedSceneId);
-    if (selectedItem(host, frame)?.node.id !== expectedItemId || !currentMaster || !original.parent) {
+    requireFrame(expectedSceneId);
+    if (selectedItem(frame)?.node.id !== expectedItemId || !currentMaster || !original.parent) {
       throw new Error('Выделение изменилось или выбранный предмет недоступен.');
     }
     const data = sceneData(frame);
@@ -402,7 +402,7 @@ export function createComposer(host: Host) {
     selection,
     build: (items: Item[], options: BuildOptions) => makeScene(items, options, options.palette),
     async alternative(expectedSceneId: string) {
-      const frame = requireFrame(host, expectedSceneId);
+      const frame = requireFrame(expectedSceneId);
       const data = sceneData(frame);
       const entries = managedChildren(frame);
       const items = entries.filter(entry => entry.item);
@@ -414,7 +414,7 @@ export function createComposer(host: Host) {
       });
     },
     migrate(expectedSceneId: string) {
-      const frame = requireFrame(host, expectedSceneId);
+      const frame = requireFrame(expectedSceneId);
       if (frame.getSharedPluginData(namespace, sceneKey)) throw new Error('Этот кадр уже доступен для передачи.');
       const data = sceneData(frame);
       const writes = managedChildren(frame).map(({ node, item }) => ({
@@ -435,9 +435,9 @@ export function createComposer(host: Host) {
     },
     recolor, add, changeRole,
     async exportSvg(expectedSceneId: string) {
-      const frame = requireFrame(host, expectedSceneId);
+      const frame = requireFrame(expectedSceneId);
       const bytes = await frame.exportAsync({ format: 'SVG', svgIdAttribute: true, svgSimplifyStroke: false });
-      requireFrame(host, expectedSceneId);
+      requireFrame(expectedSceneId);
       return { sceneId: frame.id, filename: svgFilename(frame.name), svg: prepareSvgExport(bytes) };
     }
   };

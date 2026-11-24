@@ -30,6 +30,7 @@
   }
   .tabs button[aria-selected=true] { color:var(--text); border-color:var(--primary); }
   .panel > * + * { margin-top:10px; }
+  #library-notice { margin-bottom:12px; }
   label { display:grid; gap:4px; min-width:0; font-weight:620; }
   textarea, select, button { font:inherit; color:inherit; }
   textarea, select, button, .download {
@@ -99,6 +100,10 @@
 
   <main id="panel-main">
     <section id="create-panel" class="panel" role="tabpanel" aria-labelledby="create-tab">
+      <div id="library-notice" class="card" hidden>
+        <p id="library-status" role="status"></p>
+        <button id="prepare-library" class="primary" type="button" hidden>Подготовить библиотеку</button>
+      </div>
       <form id="compose">
         <fieldset class="segmented">
           <legend class="sr-only">Способ подбора</legend>
@@ -185,6 +190,8 @@
 
   <footer>
     <p id="status" role="status" aria-live="polite"></p>
+    <button id="cancel-library" type="button" hidden>Отменить подготовку</button>
+    <a id="library-report" class="download" download="figma-library.json" hidden>Скачать отчёт о библиотеке</a>
     <a id="download" class="download" hidden>Скачать SVG</a>
   </footer>
   <dialog id="help" aria-labelledby="help-title">
@@ -219,11 +226,21 @@
         </details>
         <details>
           <summary>Почему часть команд недоступна?</summary>
-          <p>Для редактирования выделите композицию, созданную плагином. Для смены роли выделите один предмет внутри неё. Если плагин сообщает, что библиотека отсутствует, запустите «Подготовка библиотеки иллюстраций» в рабочем файле.</p>
+          <p>Для редактирования выделите композицию, созданную плагином. Для смены роли выделите один предмет внутри неё. Если библиотека ещё не готова, нажмите «Подготовить библиотеку» на вкладке «Новая композиция» в файле задания.</p>
+        </details>
+        <details>
+          <summary>Как проверить библиотеку и скачать отчёт?</summary>
+          <p>В файле с исходниками запустите проверку компонентов, цветов и экспорта. После проверки внизу окна появится ссылка на отчёт.</p>
+          <button id="verify-library" type="button">Проверить библиотеку</button>
+        </details>
+        <details>
+          <summary>Выгрузка мастеров</summary>
+          <p>Сохраните векторные мастера и палитры в один JSON для сборки автономного ZIP.</p>
+          <button id="export-library" type="button">Выгрузить библиотеку</button>
         </details>
         <details>
           <summary>Что делать, если заголовок не распознан?</summary>
-          <p>Попробуйте более конкретное слово или перечислите нужные предметы в режиме «Названия предметов».</p>
+          <p>Плагин распознаёт словоформы и устойчивые выражения из словаря. Например, «Собирали по кусочкам» даёт пазлы. Если совпадений нет, уточните фразу или перечислите предметы в режиме «Названия предметов».</p>
         </details>
         <details>
           <summary>Как проверить, что SVG редактируется?</summary>

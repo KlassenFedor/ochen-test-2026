@@ -5,8 +5,9 @@ import { isScheme, isSlot, paletteColor, readPaletteSnapshot, record, rgb, schem
 import type { Component, Host, Instance, Node, Paint, Section, Variable } from './host';
 
 const libraryPageName = 'Библиотека компонентов';
-const librarySectionName = 'Библиотека · Компоненты';
-const demoSectionName = 'Демо · Плагин';
+export const librarySectionName = 'Библиотека · Компоненты';
+export const demoSectionName = 'Демо · Плагин';
+export const libraryMetadata = { namespace: 'ochenIllustrationComposer', pageKey: 'library-page' } as const;
 const collectionPrefix = 'Illustration / Palette / ';
 const detailsName = 'Illustration / Details';
 const objectIds = new Set(catalog.map(item => item.id));
@@ -16,17 +17,43 @@ const fields = ['fills', 'strokes'] as const;
 function unique<T>(entries: T[], name: string): T {
   if (entries.length !== 1) {
     throw new Error(entries.length ? `Найдены дубликаты «${name}».` :
-      `Не найдено «${name}». Запустите плагин подготовки библиотеки в этом файле.`);
+      `Не найдено «${name}». Проверьте библиотеку через «Помощь и инструкции» или откройте демофайл задания.`);
   }
   return entries[0]!;
 }
 
+export async function findLibrarySections(host: Host) {
+  const saved = host.root.getSharedPluginData?.(libraryMetadata.namespace, libraryMetadata.pageKey);
+  const page = saved ? host.root.children.find(node => node.id === saved) : undefined;
+  const candidates = page ? [page] : host.root.children.filter(node => node.name === libraryPageName);
+  if (!candidates.length) return;
+  const libraryPage = unique(candidates, libraryPageName);
+  await libraryPage.loadAsync();
+  const sections = (name: string) => libraryPage.children
+    .filter((node): node is Section => node.type === 'SECTION' && node.name === name);
+  return { page: libraryPage, masters: sections(librarySectionName), demos: sections(demoSectionName) };
+}
+
+export async function librarySections(host: Host) {
+  const found = await findLibrarySections(host);
+  if (!found) throw new Error(`Не найдена библиотека в этом файле. Откройте файл задания с мастерами.`);
+  return found;
+}
+
+export type LibraryState = 'ready' | 'needs-setup' | 'unavailable' | 'bundled';
+
+export async function libraryState(host: Host): Promise<Exclude<LibraryState, 'bundled'>> {
+  const found = await findLibrarySections(host);
+  if (!found) return 'unavailable';
+  const { masters, demos } = found;
+  if (masters.length > 1) unique(masters, librarySectionName);
+  if (demos.length > 1) unique(demos, demoSectionName);
+  return masters.length && demos.length ? 'ready' : 'needs-setup';
+}
+
 export async function openLibrary(host: Host) {
-  const page = unique(host.root.children.filter(node => node.name === libraryPageName), libraryPageName);
-  await page.loadAsync();
-  const section = (name: string) => unique(page.children
-    .filter((node): node is Section => node.type === 'SECTION' && node.name === name), name);
-  const masters = section(librarySectionName);
+  const { page, masters: sections } = await librarySections(host);
+  const masters = unique(sections, librarySectionName);
 
   const index = new Map<string, Component>();
   const families = new Set<string>();
@@ -50,7 +77,8 @@ export async function openLibrary(host: Host) {
   }
   const component = (key: string) => unique(index.has(key) ? [index.get(key)!] : [], key);
   return {
-    page, demo: () => section(demoSectionName),
+    page, demo: () => unique(page.children
+      .filter((node): node is Section => node.type === 'SECTION' && node.name === demoSectionName), demoSectionName),
     object: (size: Size, item: Item) => component(`${item.id}/${size}/${item.role}`),
     background: (size: Size, scheme: Scheme) => component(`background/${size}/${scheme}`)
   };
