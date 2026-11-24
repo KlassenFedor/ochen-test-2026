@@ -26,6 +26,8 @@ export interface Node {
   fills?: PaintList;
   strokes?: PaintList;
   getPluginData(key: string): string;
+  getSharedPluginData(namespace: string, key: string): string;
+  setSharedPluginData(namespace: string, key: string, value: string): void;
   setPluginData(key: string, value: string): void;
   remove(): void;
 }
@@ -38,7 +40,7 @@ export interface Drawable extends Node, Dimensions {
   relativeTransform: Transform;
 }
 
-interface Container extends Drawable {
+export interface Container extends Drawable {
   readonly children: readonly Drawable[];
   appendChild(node: Drawable): void;
   insertChild(index: number, node: Drawable): void;
@@ -48,6 +50,7 @@ export interface Page extends Node {
   readonly type: 'PAGE';
   readonly children: readonly Drawable[];
   selection: readonly Drawable[];
+  appendChild(node: Drawable): void;
   loadAsync(): Promise<void>;
 }
 
@@ -60,6 +63,7 @@ export interface Frame extends Container {
   readonly type: 'FRAME';
   fills: PaintList;
   clipsContent: boolean;
+  readonly layoutMode: string;
   resizeWithoutConstraints(width: number, height: number): void;
   exportAsync(settings: {format: 'SVG'; svgIdAttribute: boolean; svgSimplifyStroke: boolean}): Promise<Uint8Array>;
 }
@@ -72,6 +76,11 @@ export interface Component extends Container {
 
 export interface Instance extends Drawable {
   readonly type: 'INSTANCE';
+  readonly overrides: readonly { id: string; overriddenFields: readonly string[] }[];
+  readonly scaleFactor?: number;
+  clone(): Instance;
+  swapComponent(component: Component): void;
+  resizeWithoutConstraints(width: number, height: number): void;
   getMainComponentAsync(): Promise<Component | null>;
   rescale(scale: number): void;
 }

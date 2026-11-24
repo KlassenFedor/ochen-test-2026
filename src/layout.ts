@@ -46,6 +46,18 @@ function area(rect: Rect) {
   return rect.width * rect.height;
 }
 
+function subtract(rect: Rect, cover: Rect): Rect[] {
+  const cut = intersect(rect, cover);
+  if (!area(cut)) return [rect];
+  const right = cut.x + cut.width, bottom = cut.y + cut.height;
+  return [
+    { ...rect, width: cut.x - rect.x },
+    { ...rect, x: right, width: rect.x + rect.width - right },
+    { x: cut.x, y: rect.y, width: cut.width, height: cut.y - rect.y },
+    { x: cut.x, y: bottom, width: cut.width, height: rect.y + rect.height - bottom }
+  ].filter(part => area(part) > 0);
+}
+
 function visibleEnough(items: LayoutItem[], places: Place[]): boolean {
   return places.every((place, i) => {
     if (items[place.index]!.role === 'background') return true;
@@ -129,16 +141,40 @@ export function planLayout(items: LayoutItem[], format: Format, previous?: strin
   return { ...valid[(previousIndex + 1) % valid.length]!, frame: frameSize(format) };
 }
 
-export function planAddition(item: Dimensions, frame: Dimensions, scale: number, occupied: Rect[]) {
+export function planAddition(item: Dimensions, frame: Dimensions, scale: number, occupied: (Rect & { role?: Role })[]) {
   const fitted = Math.min(scale, frameScale(item, frame, 0.8));
-  const xs = [0.5, 0.26, 0.74], ys = [0.5, 0.26, 0.74];
-  const clamp = (center: number, edge: number, half: number) => Math.max(half, Math.min(edge - half, center));
-  const candidates = ys.flatMap(y => xs.map(x => centered(item,
-    clamp(frame.width * x, frame.width, item.width * fitted / 2),
-    clamp(frame.height * y, frame.height, item.height * fitted / 2), fitted)));
-  const overlap = (candidate: Rect) => occupied.reduce((sum, rect) => sum + area(intersect(rect, candidate)), 0);
-  candidates.sort((a, b) => overlap(a) - overlap(b));
-  return { ...candidates[0]!, scale: fitted };
+  const anchors = [0.5, 0.25, 0.75, 0, 1, 0.125, 0.375, 0.625, 0.875];
+  const clipped = occupied.map(rect => ({
+    rect: intersect(rect, { ...frame, x: 0, y: 0 }), main: rect.role !== 'background'
+  })).filter(({ rect }) => area(rect) > 0);
+  // Treat each layer's bounding box as opaque. Measure only the parts still
+  // exposed after clipping and overlap with higher layers.
+  const visible = clipped.map(({ rect, main }, i) => {
+    const parts = clipped.slice(i + 1).reduce<Rect[]>((result, top) =>
+      result.flatMap(part => subtract(part, top.rect)), [rect]);
+    return { parts, main, area: parts.reduce((sum, part) => sum + area(part), 0) };
+  });
+  for (const fraction of [1, 0.85, 0.7, 0.55, 0.4]) {
+    const candidateScale = fitted * fraction;
+    if (candidateScale < 0.01) break;
+    const halfW = item.width * candidateScale / 2, halfH = item.height * candidateScale / 2;
+    let best: (Rect & { scale: number }) | undefined;
+    let lowest = Infinity;
+    for (const y of anchors) for (const x of anchors) {
+      const candidate = centered(item, halfW + x * (frame.width - 2 * halfW),
+        halfH + y * (frame.height - 2 * halfH), candidateScale);
+      const covers = visible.map(({ parts }) =>
+        parts.reduce((sum, part) => sum + area(intersect(part, candidate)), 0));
+      if (visible.some(({ main, area }, index) => main && covers[index]! > area * 0.25)) continue;
+      const overlap = covers.reduce((sum, value) => sum + value, 0);
+      if (overlap < lowest) {
+        best = { ...candidate, scale: candidateScale };
+        lowest = overlap;
+      }
+    }
+    if (best) return best;
+  }
+  throw new Error('Нет места для нового предмета. Освободите место в кадре и повторите добавление.');
 }
 
 export function keepCenter(transform: Transform, before: Dimensions, after: Dimensions): Transform {

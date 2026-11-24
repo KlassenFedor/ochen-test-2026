@@ -1,4 +1,4 @@
-import { catalog, names } from './catalog';
+import { catalog, maxSceneItems, names } from './catalog';
 import { isFormat, isSize } from './layout';
 import { isScheme, parsePalette, schemes, type PaletteChoice } from './palette';
 import type { SelectionState } from './figma/scene';
@@ -67,6 +67,8 @@ function update() {
   const busy = Boolean(pending);
   for (const id of ['build', 'import-build-palette']) button(id).disabled = busy;
   for (const id of ['alternative', 'export', 'import-scene-palette']) button(id).disabled = busy || !selection.scene;
+  button('migrate').hidden = !selection.scene?.legacy;
+  button('migrate').disabled = busy || !selection.scene?.legacy;
 
   element('scene-empty').hidden = Boolean(selection.scene);
   element('scene-tools').hidden = !selection.scene;
@@ -92,7 +94,14 @@ function updateMode() {
   const namesMode = mode === 'names';
   query.placeholder = namesMode ? 'Книга, телефон' : 'Учиться в дороге';
   element('query-label').textContent = namesMode ? 'Предметы через запятую' : 'Заголовок или метафора';
-  element('query-hint').textContent = namesMode ? names : 'Плагин подберёт 1–3 предмета по смыслу.';
+  element('query-hint').textContent = namesMode ? `До ${maxSceneItems} предметов. ${names}.` : 'Плагин подберёт 1–3 предмета по смыслу.';
+}
+
+function clearDownload() {
+  if (downloadUrl) URL.revokeObjectURL(downloadUrl);
+  downloadUrl = undefined;
+  download.hidden = true;
+  download.removeAttribute('href');
 }
 
 function updateSelection(next: SelectionState) {
@@ -100,7 +109,10 @@ function updateSelection(next: SelectionState) {
   selection = next;
   const scene = next.scene;
   const current = scene ? paletteOption(scene.palette) : '';
-  if (scene?.id !== previousId) items.value = '';
+  if (scene?.id !== previousId) {
+    items.value = '';
+    clearDownload();
+  }
   if (scene && (scene.id !== previousId || current !== appliedPalette)) scenePalette.value = current;
   appliedPalette = current;
   element('current-palette').textContent = scene ? `Текущая палитра: ${paletteName(scene.palette)}` : '';
@@ -111,12 +123,7 @@ function updateSelection(next: SelectionState) {
 
 function send(command: Command) {
   if (pending) return;
-  if (command.type === 'export' && downloadUrl) {
-    URL.revokeObjectURL(downloadUrl);
-    downloadUrl = undefined;
-    download.hidden = true;
-    download.removeAttribute('href');
-  }
+  if (command.type === 'export') clearDownload();
   if (command.type !== 'ready') {
     pending = command.type;
     update();
@@ -198,19 +205,23 @@ connectImport('scene', scenePalette);
 
 items.onchange = update;
 scenePalette.onchange = update;
-button('alternative').onclick = () => send({ type: 'alternative' });
+for (const type of ['alternative', 'export', 'migrate'] as const) {
+  button(type).onclick = () => {
+    if (selection.scene) send({ type, sceneId: selection.scene.id });
+  };
+}
 button('add').onclick = () => {
-  if (!items.value) return;
-  send({ type: 'add', id: items.value });
+  if (selection.scene && items.value) send({ type: 'add', sceneId: selection.scene.id, id: items.value });
 };
-button('role').onclick = () => send({ type: 'role' });
+button('role').onclick = () => {
+  if (selection.scene && selection.item) send({ type: 'role', sceneId: selection.scene.id, itemId: selection.item.id });
+};
 button('apply').onclick = () => {
   const choice = options.get(scenePalette.value);
   if (selection.scene && choice && scenePalette.value !== appliedPalette) {
     send({ type: 'palette', sceneId: selection.scene.id, choice });
   }
 };
-button('export').onclick = () => send({ type: 'export' });
 
 window.addEventListener('message', event => {
   const message = event.data?.pluginMessage as Message | undefined;
@@ -222,8 +233,9 @@ window.addEventListener('message', event => {
     pending = undefined;
     feedback(message.text, !message.ok);
     if (message.ok && operation === 'build' && view === 'create') switchView('edit', true);
-    if (message.download) {
-      if (downloadUrl) URL.revokeObjectURL(downloadUrl);
+    if (message.ok && operation && operation !== 'export') clearDownload();
+    if (message.download && message.download.sceneId === selection.scene?.id) {
+      clearDownload();
       downloadUrl = URL.createObjectURL(new Blob([message.download.svg], { type: 'image/svg+xml;charset=utf-8' }));
       download.href = downloadUrl;
       download.download = message.download.filename;

@@ -157,7 +157,7 @@
           <div class="role-copy">
             <p id="role-selection" class="quiet"></p>
             <button id="role" type="button" aria-describedby="role-selection role-hint" hidden></button>
-            <p id="role-hint" class="quiet" hidden>Изменятся вид и цвета предмета. Его положение сохранится.</p>
+            <p id="role-hint" class="quiet" hidden>Изменятся вид и цвета предмета. Положение сохранится. Плагин сообщит, если часть правок не перенесётся.</p>
           </div>
         </section>
         <section class="card" aria-labelledby="scene-color-heading">
@@ -176,7 +176,8 @@
             <button id="alternative" type="button" aria-describedby="alternative-hint">Создать другую раскладку</button>
             <button id="export" type="button">Экспорт SVG</button>
           </div>
-          <p id="alternative-hint" class="quiet">Те же предметы появятся в отдельном кадре.</p>
+          <p id="alternative-hint" class="quiet">Те же предметы появятся в отдельном кадре рядом с исходным.</p>
+          <button id="migrate" type="button" hidden>Подготовить старый кадр к передаче</button>
         </section>
       </div>
     </section>
@@ -209,7 +210,7 @@
         <h3>Частые вопросы</h3>
         <details>
           <summary>Как перекрасить готовый кадр?</summary>
-          <p>Выделите кадр или предмет в нём. На вкладке «Редактирование» выберите палитру в блоке «Цвета композиции» и нажмите «Перекрасить кадр». Положение и порядок предметов сохранятся.</p>
+          <p>Выделите кадр или предмет в нём. На вкладке «Редактирование» выберите палитру и нажмите «Перекрасить кадр». Штатная палитра меняет и рисунок фона. Палитра из JSON обновляет цвета текущего фона. Положение и порядок предметов сохранятся.</p>
         </details>
         <details>
           <summary>Зачем нужен JSON?</summary>
@@ -227,6 +228,10 @@
         <details>
           <summary>Как проверить, что SVG редактируется?</summary>
           <p>Выделите кадр и нажмите «Экспорт SVG». Перетащите скачанный файл обратно на холст, раскройте его в Layers и выделите отдельный контур.</p>
+        </details>
+        <details>
+          <summary>Как передать старые кадры коллеге для редактирования?</summary>
+          <p>Обновите плагин, сохранив исходный ID установки. Выделите старый кадр и нажмите «Подготовить старый кадр к передаче». Повторите для остальных старых кадров и передайте файл вместе с библиотекой компонентов.</p>
         </details>
       </section>
     </div>

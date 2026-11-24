@@ -7,6 +7,7 @@ declare const __html__: string;
 declare const figma: Host & {
   showUI(html: string, options: { width: number; height: number; themeColors: boolean }): void;
   on(event: 'selectionchange' | 'currentpagechange', listener: () => void): void;
+  commitUndo(): void;
   ui: { onmessage: (data: unknown) => void; postMessage(message: Message): void };
 };
 
@@ -37,26 +38,29 @@ figma.ui.onmessage = async (data: unknown) => {
         break;
       }
       case 'alternative':
-        await composer.alternative();
+        await composer.alternative(command.sceneId);
         text = 'Кадр с другой раскладкой создан рядом.';
         break;
       case 'palette':
-        await composer.recolor(command.choice, command.sceneId);
-        text = 'Композиция перекрашена.';
+        text = 'Композиция перекрашена.' + overrideWarning(await composer.recolor(command.choice, command.sceneId));
         break;
       case 'add':
         itemName(command.id);
-        await composer.add({ id: command.id, role: 'main' });
+        await composer.add({ id: command.id, role: 'main' }, command.sceneId);
         text = `Добавлен предмет «${itemName(command.id)}».`;
         break;
       case 'role':
-        await composer.changeRole();
-        text = 'Роль предмета изменена.';
+        text = 'Роль предмета изменена.' + overrideWarning(await composer.changeRole(command.sceneId, command.itemId));
+        break;
+      case 'migrate':
+        composer.migrate(command.sceneId);
+        text = 'Этот кадр доступен для редактирования с другой установкой плагина.';
         break;
       case 'export':
-        send({ type: 'result', ok: true, text: 'SVG подготовлен.', download: await composer.exportSvg() });
+        send({ type: 'result', ok: true, text: 'SVG подготовлен.', download: await composer.exportSvg(command.sceneId) });
         return;
     }
+    figma.commitUndo();
     send({ type: 'result', ok: true, text });
   } catch (error) {
     send({ type: 'result', ok: false, text: error instanceof Error ? error.message : String(error) });
@@ -65,3 +69,7 @@ figma.ui.onmessage = async (data: unknown) => {
     sendSelection();
   }
 };
+
+function overrideWarning(lost: string[]) {
+  return lost.length ? ` Не удалось перенести правки (${lost.length}): ${lost.slice(0, 3).join(', ')}${lost.length > 3 ? ' и другие' : ''}. При необходимости отмените действие в Figma.` : '';
+}

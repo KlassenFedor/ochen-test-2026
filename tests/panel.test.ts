@@ -9,6 +9,7 @@ class Element {
   hidden = false;
   disabled = false;
   opened = false;
+  href?: string;
   dataset = {};
   files?: { size: number; text(): Promise<string> }[];
   private selectedOption = false;
@@ -24,6 +25,7 @@ class Element {
     this.selectedOption = true;
   }
   setAttribute() {}
+  removeAttribute(name: string) { if (name === 'href') this.href = undefined; }
   focus() {}
   click() { if (!this.disabled) this.onclick?.(); }
   showModal() { this.opened = true; }
@@ -91,7 +93,7 @@ test('the panel stages imports in the matching tab and confirms recoloring for o
     assert.deepEqual(posted, [], 'choosing a file alone cannot recolor a frame');
     assert.match(get('current-palette').textContent, /Сиреневая/);
     assert.match(get('build-palette').value, /Палитра для новой сцены/);
-    select('A', 'violet', { name: 'Телефон', role: 'main' });
+    select('A', 'violet', { id: 'A-phone', name: 'Телефон', role: 'main' });
     assert.match(get('scene-palette').value, /Палитра для перекраски/);
     assert.equal(get('role').textContent, 'Сделать фоновым');
     get('apply').click();
@@ -116,6 +118,32 @@ test('the panel stages imports in the matching tab and confirms recoloring for o
     assert.equal(get('scene-palette').value, 'turquoise');
     assert.ok(get('apply').disabled);
     assert.equal(posted.length, 1, 'selection changes during file reads must never post another edit');
+
+    select('A', 'violet', { id: 'A-phone', name: 'Телефон', role: 'main' });
+    get('role').click();
+    assert.deepEqual(posted.pop(), { type: 'role', sceneId: 'A', itemId: 'A-phone' });
+    host({ type: 'result', ok: true, text: 'Готово.' });
+    get('item').value = 'book';
+    get('item').onchange?.();
+    get('add').click();
+    assert.deepEqual(posted.pop(), { type: 'add', sceneId: 'A', id: 'book' });
+    host({ type: 'result', ok: true, text: 'Готово.' });
+    get('alternative').click();
+    assert.deepEqual(posted.pop(), { type: 'alternative', sceneId: 'A' });
+    host({ type: 'result', ok: true, text: 'Готово.' });
+    get('export').click();
+    assert.deepEqual(posted.pop(), { type: 'export', sceneId: 'A' });
+    const download = { type: 'result', ok: true, text: 'SVG', download: { sceneId: 'A', filename: 'A.svg', svg: '<svg/>' } };
+    host(download);
+    const href = get('download').href;
+    assert.ok(href);
+    assert.equal(get('download').hidden, false);
+    select('B', 'peach');
+    assert.equal(get('download').hidden, true);
+    assert.equal(get('download').href, undefined);
+    assert.equal((await fetch(href).catch(() => undefined)), undefined, 'the old object URL is revoked');
+    host(download);
+    assert.equal(get('download').hidden, true, 'a late export must not attach a link to the next frame');
   } finally {
     for (const { key, before } of globals) {
       if (before) Object.defineProperty(globalThis, key, before);

@@ -4,29 +4,38 @@ import type { BuildOptions, SelectionState } from './figma/scene';
 
 export type Command =
   | { type: 'build'; mode: 'names' | 'title'; query: string; options: BuildOptions }
-  | { type: 'add'; id: string }
+  | { type: 'add'; sceneId: string; id: string }
+  | { type: 'role'; sceneId: string; itemId: string }
   | { type: 'palette'; sceneId: string; choice: BuildOptions['palette'] }
-  | { type: 'ready' | 'alternative' | 'role' | 'export' };
+  | { type: 'alternative' | 'export' | 'migrate'; sceneId: string }
+  | { type: 'ready' };
 
 export type Message =
   | { type: 'selection'; selection: SelectionState }
-  | { type: 'result'; ok: boolean; text: string; download?: { filename: string; svg: string } };
+  | { type: 'result'; ok: boolean; text: string; download?: { sceneId: string; filename: string; svg: string } };
+
+function readId(value: unknown, message: string): string {
+  if (typeof value !== 'string' || !value.trim()) throw new Error(message);
+  return value;
+}
 
 export function readCommand(value: unknown): Command {
   const command = record(value);
+  const sceneId = () => readId(command.sceneId, 'Выделите композицию.');
   switch (command.type) {
-    case 'ready':
+    case 'ready': return { type: 'ready' };
     case 'alternative':
-    case 'role':
     case 'export':
-      return { type: command.type };
+    case 'migrate':
+      return { type: command.type, sceneId: sceneId() };
+    case 'role':
+      return { type: 'role', sceneId: sceneId(), itemId: readId(command.itemId, 'Выделите предмет.') };
     case 'add':
-      if (typeof command.id === 'string') return { type: 'add', id: command.id };
+      if (typeof command.id === 'string') return { type: 'add', sceneId: sceneId(), id: command.id };
       break;
     case 'palette': {
       const choice = readPaletteChoice(command.choice);
-      if (typeof command.sceneId !== 'string' || !command.sceneId) throw new Error('Выделите композицию для перекраски.');
-      return { type: 'palette', sceneId: command.sceneId, choice };
+      return { type: 'palette', sceneId: sceneId(), choice };
     }
     case 'build': {
       const opts = record(command.options);

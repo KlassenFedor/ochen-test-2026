@@ -12,6 +12,11 @@ if (args.length && (args.length !== 2 || args[0] !== '--plugin-id' || !/^\d+$/.t
 }
 const manifest = JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8'));
 if (args.length) manifest.id = args[1];
+const docs = ['docs/Задача-и-решение.md', 'docs/Визуальная-проверка.md'];
+await Promise.all(docs.map(async file => {
+  try { await readFile(resolve(root, file)); }
+  catch (error) { throw new Error(`В архиве требуется ${file}.`, { cause: error }); }
+}));
 await Promise.all([
   import('./build.mjs'),
   run(process.execPath, ['tools/prepare-library/build.mjs'], { cwd: root })
@@ -24,7 +29,7 @@ try {
   const preparation = ['README.md', 'manifest.json', 'build/code.js'].map(file => `tools/prepare-library/${file}`);
   const files = [
     manifest.main, manifest.ui, ...preparation,
-    'README.md', 'data/example-palette.json', 'data/layouts.json'
+    'README.md', 'data/example-palette.json', 'data/layouts.json', ...docs
   ];
   for (const file of files) {
     const destination = resolve(staging, file);
@@ -35,14 +40,6 @@ try {
       await writeFile(destination, JSON.stringify(helperManifest, null, 2) + '\n');
     } else {
       await copyFile(resolve(root, file), destination);
-    }
-  }
-  for (const file of ['Задача-и-решение.md', 'Визуальная-проверка.md']) {
-    try {
-      await copyFile(resolve(root, 'docs', file), resolve(staging, file));
-      files.push(file);
-    } catch (error) {
-      if (error.code !== 'ENOENT') throw error;
     }
   }
   await writeFile(resolve(staging, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');

@@ -29,6 +29,13 @@ test('title suggestions are bounded and word boundaries prevent substring matche
   assert.equal(suggestItems('Чтение, музыка, финансы, свет, папка').length, 3);
   assert.throws(() => suggestItems('Просветление в горах'), /Подходящих предметов не найдено/);
 });
+test('a longer exact catalog phrase outranks one-word names when the title has many matches', () => {
+  assert.equal(suggestItems('Книга, пазлы, телефон, папка для документов')[0].id, 'folder');
+});
+test('very long lists of valid names stop before composition', () => {
+  assert.equal(parseNames(Array(24).fill('ваза').join(', ')).length, 24);
+  assert.throws(() => parseNames(Array(819).fill('ваза').join(',')), /до 24/);
+});
 test('custom palette accepts duplicate slots, validates version, lengths and every hex value', () => {
   const palette = parsePalette(JSON.stringify({ ...example, background: ['#AAAAAA', '#AAAAAA', '#7700aa', '#112233'] }));
   assert.deepEqual(palette.background[0], palette.background[1]);
@@ -49,6 +56,10 @@ test('build commands validate format, size and palettes at the document boundary
   assert.throws(() => readCommand({ ...cmd, options: { ...cmd.options, format: 'letter' } }), /формат/);
   assert.throws(() => readCommand({ ...cmd, query: '   ' }), /Введите/);
   assert.throws(() => readCommand({ type: 'palette', choice: { kind: 'preset', scheme: '__proto__' } }), /палитру/);
+  for (const type of ['add', 'alternative', 'role', 'export', 'migrate']) {
+    assert.throws(() => readCommand({ type, id: 'book' }), /композицию/);
+  }
+  assert.throws(() => readCommand({ type: 'role', sceneId: '1:2' }), /предмет/);
 });
 test('initial pair is diagonal with the phone in front and shares one proportional scale', () => {
   const items = [shape(730, 560), shape(480, 680)];
@@ -89,18 +100,38 @@ test('adding a piece keeps it in frame and chooses free space over the center', 
   assert.equal(result.scale, 1.2);
   assert.ok(result.x + result.width <= 300 || result.x >= 500);
 });
+test('adding a second large square reduces its scale to protect a centered main subject', () => {
+  const frame = { width: 1000, height: 1000 };
+  const centered = { x: 135, y: 135, width: 730, height: 730 };
+  const added = planAddition(shape(1000, 1000), frame, 0.73, [centered]);
+  const overlap = (Math.min(added.x + added.width, 865) - Math.max(added.x, 135)) *
+    (Math.min(added.y + added.height, 865) - Math.max(added.y, 135));
+  assert.ok(added.scale < 0.73);
+  assert.ok(overlap / (730 * 730) <= 0.25);
+});
 test('replacing a rotated item preserves its center with different master dimensions', () => {
   assert.deepEqual(keepCenter([[0, -1, 100], [1, 0, 200]], shape(80, 30), shape(60, 90)),
     [[0, -1, 130], [1, 0, 210]]);
 });
 test('SVG keeps vector effects but rejects raster and foreign HTML markup', () => {
-  const vector = '<svg><defs><clipPath id="c"><path d="M0 0Z"/></clipPath></defs><path clip-path="url(#c)" /></svg>';
+  const vector = '<svg><defs><clipPath id="c"><path d="M0 0Z"/></clipPath></defs><path d="M1 0Z" clip-path="url(#c)" /></svg>';
   assert.equal(validateSvg(vector), vector);
   for (const tag of ['image', 'svg:image', 'feImage', 'foreignObject']) {
-    assert.throws(() => validateSvg(`<svg><${tag}/></svg>`), /растровую вставку/);
+    assert.throws(() => validateSvg(`<svg xmlns:svg="http://www.w3.org/2000/svg"><${tag}/></svg>`), /растровую вставку/);
   }
   assert.throws(() => validateSvg('<svg>'), /неполный SVG/);
   assert.equal(svgFilename('Книга, телефон · L'), 'Книга-телефон-L.svg');
+});
+test('SVG needs well-formed XML with a vector outside resource definitions or a local reference to one', () => {
+  for (const svg of ['<svg><g></svg>', '<svg/><svg/>', '<svg><use href="#missing"/></svg>',
+    '<svg><path d="M0 0" d="M1 1"/></svg>', '<svg><path d="M0 0" id="broken<name"/></svg>']) {
+    assert.throws(() => validateSvg(svg), /некорректный XML/);
+  }
+  for (const svg of ['<svg></svg>', '<svg><path/></svg>', '<svg><defs><path d="M1 1Z"/></defs></svg>']) {
+    assert.throws(() => validateSvg(svg), /нет векторного содержимого/);
+  }
+  const reusable = '<svg xmlns="http://www.w3.org/2000/svg"><defs><symbol id="p"><path d="M1 1Z"/></symbol></defs><use href="#p"/></svg>';
+  assert.equal(validateSvg(reusable), reusable);
 });
 
 test('SVG preserves Unicode IDs and references even when the text encoding is misdetected', () => {

@@ -27,7 +27,6 @@ export async function openLibrary(host: Host) {
   const section = (name: string) => unique(page.children
     .filter((node): node is Section => node.type === 'SECTION' && node.name === name), name);
   const masters = section(librarySectionName);
-  const demo = section(demoSectionName);
 
   const index = new Map<string, Component>();
   const families = new Set<string>();
@@ -51,7 +50,7 @@ export async function openLibrary(host: Host) {
   }
   const component = (key: string) => unique(index.has(key) ? [index.get(key)!] : [], key);
   return {
-    page, demo,
+    page, demo: () => section(demoSectionName),
     object: (size: Size, item: Item) => component(`${item.id}/${size}/${item.role}`),
     background: (size: Size, scheme: Scheme) => component(`background/${size}/${scheme}`)
   };
@@ -65,30 +64,24 @@ export async function loadColors(host: Host) {
   const byId = new Map(variables.map(variable => [variable.id, variable]));
   const modes = new Map(collections.map(collection => [collection.id, collection.defaultModeId]));
   const roles = new Map<string, Slot | 'fixed'>();
-  const byScheme = new Map<Scheme, Map<Slot, Variable>>();
-  const details = collections.filter(collection => collection.name === detailsName);
-  if (details.length > 1) throw new Error(`Дубликат коллекции «${detailsName}».`);
+  const names = new Map(collections.map(collection => [collection.id, collection.name]));
+  const byCollection = new Map<string, Variable[]>();
   for (const variable of variables) {
-    if (variable.variableCollectionId === details[0]?.id && variable.name.startsWith('detail/')) {
+    const name = names.get(variable.variableCollectionId);
+    if (name === detailsName && variable.name.startsWith('detail/')) {
       roles.set(variable.id, 'fixed');
     }
-  }
-  for (const scheme of Object.keys(schemes).filter(isScheme)) {
-    const collectionName = collectionPrefix + scheme;
-    const collection = unique(collections.filter(entry => entry.name === collectionName), collectionName);
-    const tokens = new Map<Slot, Variable>();
-    for (const variable of variables) {
-      if (variable.variableCollectionId !== collection.id || !isSlot(variable.name)) continue;
-      if (tokens.has(variable.name)) throw new Error(`Дубликат переменной «${scheme}/${variable.name}».`);
-      tokens.set(variable.name, variable);
+    if (name?.startsWith(collectionPrefix) && isScheme(name.slice(collectionPrefix.length)) && isSlot(variable.name)) {
       roles.set(variable.id, variable.name);
+      const list = byCollection.get(variable.variableCollectionId) ?? [];
+      list.push(variable);
+      byCollection.set(variable.variableCollectionId, list);
     }
-    byScheme.set(scheme, tokens);
   }
   const token = (scheme: Scheme, slot: Slot) => {
-    const variable = byScheme.get(scheme)?.get(slot);
-    if (!variable) throw new Error(`Нет переменной «${scheme}/${slot}».`);
-    return variable;
+    const name = collectionPrefix + scheme;
+    const collection = unique(collections.filter(entry => entry.name === name), name);
+    return unique(byCollection.get(collection.id)?.filter(variable => variable.name === slot) ?? [], `${scheme}/${slot}`);
   };
   const tokenColor = (variable: Variable, seen = new Set<string>()): ReturnType<typeof rgb> => {
     if (seen.has(variable.id)) throw new Error(`Циклическая ссылка в «${variable.name}».`);
@@ -109,7 +102,12 @@ export async function loadColors(host: Host) {
       version: 1, name: schemes[scheme], background: values(channels[0]), object: values(channels[1])
     }) };
   }
-  return { roles, applyChoice, token };
+  function matchesToken(id: string, scheme: Scheme, slot: Slot): boolean {
+    const variable = byId.get(id);
+    return Boolean(variable && roles.get(id) === slot &&
+      names.get(variable.variableCollectionId) === collectionPrefix + scheme);
+  }
+  return { roles, applyChoice, token, matchesToken };
 }
 
 export type ColorLibrary = Awaited<ReturnType<typeof loadColors>>;
@@ -117,13 +115,13 @@ export type PaintPatch = { node: Node; field: 'fills' | 'strokes'; before: reado
 
 export function planPaints(
   host: Host, master: Component, instance: Instance, colors: ColorLibrary, applied: AppliedPalette,
-  backgroundOnly: boolean
+  backgroundOnly: boolean, swapped = false
 ): PaintPatch[] {
   const patches: PaintPatch[] = [];
   const stack: [Node, Node][] = [[master, instance]];
   while (stack.length) {
     const [source, target] = stack.pop()!;
-    if ((source !== master && (source.type !== target.type || source.name !== target.name)) ||
+    if ((source !== master && source.type !== target.type) ||
         (source.children?.length ?? 0) !== (target.children?.length ?? 0)) {
       throw new Error(`Структура «${instance.name}» отличается от мастера у слоя «${source.name}».`);
     }
@@ -131,18 +129,27 @@ export function planPaints(
       const input = source[field];
       if (input === undefined) continue;
       if (typeof input === 'symbol') throw new Error(`Смешанная краска мастера в «${source.name}».`);
-      if (!input.length) continue;
       const current = target[field];
-      if (!current || typeof current === 'symbol' || input.length !== current.length) {
+      if (!current || typeof current === 'symbol') {
+        if (!input.length) continue;
         throw new Error(`Число красок у слоя «${source.name}» изменилось.`);
       }
-      let changed = false;
+      if (!input.length && !swapped) continue;
+      if (!swapped && input.length !== current.length) {
+        throw new Error(`Число красок у слоя «${source.name}» изменилось.`);
+      }
+      let changed = swapped && input.length !== current.length;
       const after = input.map((paint, index) => {
-        const old = current[index]!;
+        const old = swapped && (input.length !== current.length || current[index]?.type !== 'SOLID')
+          ? paint : current[index]!;
         const binding = paint.type === 'SOLID' && paint.boundVariables?.color;
         const slot = binding ? colors.roles.get(binding.id) : undefined;
         if (!slot || old.type !== 'SOLID') throw new Error(`Нет привязки ${field}[${index + 1}] у слоя «${source.name}».`);
-        if (slot === 'fixed') return old;
+        if (slot === 'fixed') {
+          if (!swapped || paint.type !== 'SOLID') return old;
+          changed = true;
+          return { ...old, color: paint.color, boundVariables: paint.boundVariables };
+        }
         if (backgroundOnly && !slot.startsWith('background/')) {
           throw new Error(`Фоновый слой «${source.name}» использует слот ${slot}.`);
         }

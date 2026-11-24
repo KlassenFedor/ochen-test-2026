@@ -1,16 +1,28 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
+import { build } from 'esbuild';
+import { fileURLToPath } from 'node:url';
 
 const plan = JSON.parse(await readFile(new URL('library-plan.json', import.meta.url), 'utf8'));
 const source = await readFile(new URL('main.js', import.meta.url), 'utf8');
 const figma = {
   showUI() {}, ui: { postMessage() {} },
+  on(event, callback) { this[event] = callback; },
   variables: { setBoundVariableForPaint: (paint, field, variable) => ({ ...paint, boundVariables: { [field]: { type:'VARIABLE_ALIAS', id:variable.id } } }) }
 };
 const context = vm.createContext({ figma, LIBRARY_PLAN:plan, console });
-vm.runInContext(source.slice(0, source.lastIndexOf('\nrun().catch')) + '\nglobalThis.checked={tasks,inverse,matrixMultiply,artworkSnapshot,verifyArtwork,bindArtwork};', context);
-const { tasks, inverse, matrixMultiply, artworkSnapshot, verifyArtwork, bindArtwork } = context.checked;
+const { outputFiles } = await build({
+  stdin: {
+    contents: source.slice(0, source.lastIndexOf('\nrun().catch')) +
+      '\nglobalThis.checked={tasks,inverse,matrixMultiply,artworkSnapshot,verifyArtwork,bindArtwork,demoSection,prepareTokens,prepareSvgExport,checkOpen,created};',
+    resolveDir: fileURLToPath(new URL('./', import.meta.url))
+  },
+  bundle: true, format: 'iife', write: false, external: ['stream', 'string_decoder']
+});
+vm.runInContext(outputFiles[0].text, context);
+const { tasks, inverse, matrixMultiply, artworkSnapshot, verifyArtwork, bindArtwork,
+  demoSection, prepareTokens, prepareSvgExport, checkOpen, created } = context.checked;
 const normal = value => JSON.parse(JSON.stringify(value));
 
 // The inventory must cover both roles at both sizes, without losing an original.
@@ -80,3 +92,89 @@ bindArtwork(artwork,{key:'background/large/violet',family:'background',scheme:'v
 assert.equal(artwork.fills[0].boundVariables.color.id,'fixed-white');assert.equal(artwork.fills[0].opacity,0.35);
 assert.equal(artwork.strokes[0].boundVariables.color.id,'background-2');assert.equal(artwork.strokes[0].opacity,0.6);
 console.log('Проверено: 46 вариантов и 2 отдельные детали; преобразования координат; контроль геометрии; назначения и прозрачность красок. Запуск в Figma не выполнялся.');
+
+const collision = { ...palette, object: [palette.background[2], ...palette.object.slice(1)] };
+const affected = () => ({ name: 'Контур', fills: [{ type: 'SOLID', color: palette.background[2] }] });
+const main = { key: 'book/large/main', family: 'book', role: 'main', scheme: 'violet' };
+assert.throws(() => bindArtwork(affected(), main, collision, tokens),
+  /book\/large\/main.*Контур.*fills\[1\].*background\/2, object\/0/);
+const background = affected();
+bindArtwork(background, { ...main, role: 'background' }, collision, tokens);
+assert.equal(background.fills[0].boundVariables.color.id, 'background-2');
+assert.throws(() => bindArtwork({
+  name: 'Фоновый контур', fills: [{ type: 'SOLID', color: palette.object[1] }]
+}, { ...main, role: 'background' }, palette, tokens), /Фоновый контур.*object\/1/);
+
+for (const svg of ['<svg><g></svg>', '<svg/>', '<svg><feImage/></svg>',
+  '<svg xmlns:s="http://www.w3.org/2000/svg"><s:image/></svg>']) {
+  assert.throws(() => prepareSvgExport(new TextEncoder().encode(svg)), /XML|векторного|растровую/);
+}
+assert.equal(prepareSvgExport(new TextEncoder().encode('<svg><path d="M0 0Z"/></svg>')),
+  '<svg><path d="M0 0Z"/></svg>');
+
+const paletteFixture = [{ ...palette, id: 'violet' }];
+const collections = [], variables = [];
+const removed = [];
+const track = (list, value) => {
+  const entry = { ...value, remove() { this.removed = true; list.splice(list.indexOf(this), 1); removed.push(this.name); } };
+  list.push(entry);
+  return entry;
+};
+let written = 0, closeSawRollback = false;
+Object.assign(figma.variables, {
+  async getLocalVariableCollectionsAsync() { return [...collections]; },
+  async getLocalVariablesAsync() { return [...variables]; },
+  createVariableCollection(name) {
+    return track(collections, { id: name, name, defaultModeId: 'mode', renameMode() {} });
+  },
+  createVariable(name, collection) {
+    return track(variables, {
+      name, id: collection.id + '/' + name, variableCollectionId: collection.id, valuesByMode: {},
+      setValueForMode(mode, color) { written++; this.valuesByMode[mode] = color; },
+      setVariableCodeSyntax() { written++; }
+    });
+  }
+});
+const fixed = new Map([['0.1230000,0.2340000,0.3450000', {r:0.123,g:0.234,b:0.345}]]);
+await prepareTokens(paletteFixture, fixed);
+// Treat the first batch as already committed and modify existing metadata.
+for (const entries of Object.values(created)) entries.length = 0;
+const existing = variables.find(variable => variable.name.startsWith('detail/') &&
+  variable.variableCollectionId === 'Illustration / Details');
+existing.description = 'Ручное описание';
+existing.scopes = ['SHAPE_FILL'];
+written = 0;
+await prepareTokens(paletteFixture, fixed);
+assert.equal(written, 0);
+assert.equal(existing.description, 'Ручное описание');
+assert.deepEqual(existing.scopes, ['SHAPE_FILL']);
+
+const page = {
+  children: [],
+  appendChild(node) { this.children.push(node); }
+};
+figma.createSection = () => ({
+  type: 'SECTION', resizeWithoutConstraints(w, h) { this.width = w; this.height = h; },
+  remove() { this.removed = true; page.children.splice(page.children.indexOf(this), 1); }
+});
+const demo = demoSection(page, { x: 100, y: 160, height: 120 });
+assert.equal(demo.name, plan.demoSection);
+assert.equal(demoSection(page, { x: 100, y: 160, height: 120 }), demo);
+page.children.push({ type: 'SECTION', name: plan.demoSection });
+assert.throws(() => demoSection(page), /дубликаты/);
+page.children.pop();
+
+// Both the in-panel cancel and the native close run synchronous cleanup.
+await prepareTokens(paletteFixture, new Map([...fixed, ['0.2000000,0.3000000,0.4000000', {r:.2,g:.3,b:.4}]]));
+figma.closePlugin = () => {
+  closeSawRollback = demo.removed && removed.some(name => name.startsWith('detail/source-'));
+  figma.close();
+};
+figma.ui.onmessage({ type: 'close' });
+assert.ok(closeSawRollback);
+assert.ok(variables.includes(existing));
+assert.throws(checkOpen, /отменена/);
+const native = demoSection(page, { x: 0, y: 0, height: 10 });
+figma.close();
+assert.equal(native.removed, true);
+console.log('Проверено: неоднозначные RGB, общий SVG-валидатор, сохранение переменных, восстановление демосекции и откат при двух способах закрытия.');

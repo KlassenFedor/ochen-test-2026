@@ -5,6 +5,11 @@ export const catalog = data;
 export const names = catalog.map(item => item.name).join(', ');
 export type Role = 'main' | 'background';
 export type Item = { id: string; role: Role };
+export const maxSceneItems = 24;
+
+export function checkItemCount(count: number) {
+  if (count > maxSceneItems) throw new Error(`В одной композиции может быть до ${maxSceneItems} предметов. Разделите список или удалите лишние предметы.`);
+}
 
 export function normalize(text: string): string {
   return text.normalize('NFKC').toLocaleLowerCase('ru').replace(/ё/g, 'е')
@@ -29,6 +34,7 @@ export function itemName(id: string): string {
 
 export function parseNames(query: string): Item[] {
   const entries = query.split(',').map(word => word.trim());
+  checkItemCount(entries.length);
   const unknown = entries.filter(word => !aliases.has(normalize(word)));
   if (unknown.length) {
     throw new Error(`Не распознано: ${unknown.map(word => word ? `«${word}»` : 'пустая позиция').join(', ')}. Предметы: ${names}.`);
@@ -40,7 +46,9 @@ export function suggestItems(query: string): Item[] {
   const text = ` ${normalize(query)} `;
   const scores = new Map<string, number>();
   for (const [term, id] of aliases) {
-    if (text.includes(` ${term} `)) scores.set(id, Math.max(scores.get(id) ?? 0, 3));
+    if (text.includes(` ${term} `)) {
+      scores.set(id, Math.max(scores.get(id) ?? 0, 1 + 2 ** term.split(' ').length));
+    }
   }
   for (const theme of themes) {
     const weight = Math.max(0, ...theme.terms.map(term => {
