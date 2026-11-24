@@ -176,7 +176,7 @@ const nonVisual = new Set([...resourceTags, 'title', 'desc', 'metadata', 'style'
 const visibleChildren = (node: Element) => node.children.filter(child => !nonVisual.has(child.name));
 
 export type SvgFrame = {
-  name: string; width: number; height: number; inside: ReadonlySet<string>;
+  name: string; width: number; height: number; inside: ReadonlySet<string>; layers?: ReadonlySet<string>;
 };
 
 function matchesCanvas(node: Element, frame: SvgFrame) {
@@ -188,22 +188,32 @@ function matchesCanvas(node: Element, frame: SvgFrame) {
 
 function frameWrapper(node: Element, frame: SvgFrame) {
   const name = node.attributes.get('id');
-  return node.name === 'g' && !!name && layerId(name) === layerId(frame.name) && node.attributes.size === 1;
+  return node.name === 'g' && !!name && (name === frame.name || name === frame.name.replace(/\s+/g, '_'));
 }
 
 function canvasClip(root: Element, ids: Map<string, Element>, frame?: SvgFrame) {
   if (!frame) return;
+  const layerNames = new Set(Array.from(frame.layers ?? frame.inside, layerId));
+  const isLayer = (node: Element) => {
+    const id = node.attributes.get('id');
+    return id !== undefined && layerNames.has(layerId(id));
+  };
+  const isWrapper = (node: Element) => node.namespace === root.namespace && frameWrapper(node, frame) &&
+    node.rawAttributes.size === 1 && !isLayer(node);
   let layers = visibleChildren(root);
-  const shell = layers.length === 1 && frameWrapper(layers[0]!, frame) ? layers[0] : undefined;
+  const onlyLayer = layers.length === 1 ? layers[0] : undefined;
+  const shell = onlyLayer && isWrapper(onlyLayer) ? onlyLayer : undefined;
   if (shell) layers = visibleChildren(shell);
   const candidates = layers.filter(node => node.name === 'g' && node.attributes.has('clip-path'));
   const [container] = candidates;
-  if (!container || candidates.length !== 1 || layers.some(node => node !== container && !matchesCanvas(node, frame)) ||
-      [...container.attributes.keys()].some(name => name !== 'id' && name !== 'clip-path')) return;
+  if (!container || candidates.length !== 1 || container.namespace !== root.namespace || isLayer(container) ||
+      layers.some(node => node !== container && !matchesCanvas(node, frame)) ||
+      [...container.rawAttributes.keys()].some(name => name !== 'id' && name !== 'clip-path')) return;
   const match = /^url\(\s*(['"]?)#([^)'"]+)\1\s*\)$/.exec(container.attributes.get('clip-path') ?? '');
   if (!match) return;
   const clip = ids.get(match[2]!.trim());
-  if (!clip || clip.name !== 'clipPath' || clip.attributes.has('transform') ||
+  if (!clip || clip.name !== 'clipPath' || clip.namespace !== root.namespace ||
+      [...clip.rawAttributes.keys()].some(name => name !== 'id' && name !== 'clipPathUnits') ||
       (clip.attributes.get('clipPathUnits') ?? 'userSpaceOnUse') !== 'userSpaceOnUse') return;
   const viewport = root.attributes.get('viewBox')?.trim().split(/[\s,]+/).map(Number);
   if (viewport && (viewport.length !== 4 || viewport[0] !== 0 || viewport[1] !== 0 ||
@@ -211,10 +221,10 @@ function canvasClip(root: Element, ids: Map<string, Element>, frame?: SvgFrame) 
   const [rect] = clip.children;
   // A rounded or authored mask can blend overlapping artwork at the edge as
   // one group. Preserve that mask and its original compositing order.
-  if (!rect || clip.children.length !== 1 || !matchesCanvas(rect, frame) ||
+  if (!rect || clip.children.length !== 1 || rect.namespace !== root.namespace || !matchesCanvas(rect, frame) ||
       Number(rect.attributes.get('rx') ?? 0) || Number(rect.attributes.get('ry') ?? 0) ||
-      rect.attributes.has('clip-path') || rect.attributes.has('style')) return;
-  return { shell, container, clip, frame };
+      [...rect.rawAttributes.keys()].some(name => !['id', 'x', 'y', 'width', 'height', 'rx', 'ry'].includes(name))) return;
+  return { shell, container, clip, frame, isWrapper };
 }
 
 export function prepareSvgExport(bytes: Uint8Array, frame?: SvgFrame): string {
@@ -225,8 +235,10 @@ export function prepareSvgExport(bytes: Uint8Array, frame?: SvgFrame): string {
   function hasReferences(node: Element): boolean {
     const id = node.attributes.get('id');
     return !!id && elements.some(element => [...element.rawAttributes].some(([key, value]) =>
-      ((key === 'href' || key.endsWith(':href')) && value === '#' + id) ||
-      [...value.matchAll(localUrl)].some(match => match[2]?.trim() === id)));
+      ((key === 'href' || key.endsWith(':href')) && value.startsWith('#') &&
+        findId(value.slice(1)) === byNode.get(node)) ||
+      ((key === 'aria-labelledby' || key === 'aria-describedby') && value.split(/\s+/).includes(id)) ||
+      [...value.matchAll(localUrl)].some(match => findId(match[2]!.trim()) === byNode.get(node))));
   }
   const originalClip = candidate && (hasReferences(candidate.container) ||
     (candidate.shell && hasReferences(candidate.shell))) ? undefined : candidate;
@@ -282,7 +294,8 @@ export function prepareSvgExport(bytes: Uint8Array, frame?: SvgFrame): string {
     const renderLayer = (node: Element): string => {
       if (nonVisual.has(node.name)) return render(node);
       const name = node.attributes.get('id');
-      const sceneWrapper = frameWrapper(node, boundary.frame) && node.children.length > 1 && !hasReferences(node);
+      const sceneWrapper = boundary.isWrapper(node) && visibleChildren(boundary.container).length === 1 &&
+        visibleChildren(node).length > 1 && !hasReferences(node);
       if (sceneWrapper) return content(node, renderLayer);
       const rectInside = matchesCanvas(node, boundary.frame) && !node.attributes.has('stroke') &&
         !node.attributes.has('style') && !node.attributes.has('filter');
@@ -297,10 +310,13 @@ export function prepareSvgExport(bytes: Uint8Array, frame?: SvgFrame): string {
     if (node === originalClip?.shell) return content(node, renderRootChild);
     return render(node);
   }
-  const rewritten = originalClip
-    ? opening(root) + content(root, renderRootChild) + svg.slice(root.closeStart, root.end)
-    : render(root);
-  return svg.slice(0, root.start) + rewritten + svg.slice(root.end);
+  const document = (markup: string) => svg.slice(0, root.start) + markup + svg.slice(root.end);
+  if (originalClip) {
+    const split = document(opening(root) + content(root, renderRootChild) + svg.slice(root.closeStart, root.end));
+    try { return validateSvg(split); }
+    catch { /* Preserve the native grouping if splitting changed XML validity. */ }
+  }
+  return validateSvg(document(render(root)));
 }
 
 export function svgFilename(name: string): string {

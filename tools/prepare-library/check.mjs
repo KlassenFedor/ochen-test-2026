@@ -112,7 +112,7 @@ for (const svg of ['<svg><g></svg>', '<svg/>', '<svg><feImage/></svg>',
 assert.equal(prepareSvgExport(new TextEncoder().encode('<svg><path d="M0 0Z"/></svg>')),
   '<svg><path d="M0 0Z"/></svg>');
 
-const paletteFixture = [{ ...palette, id: 'violet' }];
+const paletteFixture = plan.palettes.map(({ id }) => ({ ...palette, id }));
 const collections = [], variables = [];
 const removed = [];
 const track = (list, value) => {
@@ -168,7 +168,14 @@ page.children.pop();
 
 // A prepared copy can restore the demo without reading the original layer IDs.
 demo.remove();
-const masters = { type: 'SECTION', name: plan.librarySection, x: 100, y: 160, height: 120 };
+const masters = { type: 'SECTION', name: plan.librarySection, x: 100, y: 160, height: 120,
+  children: [...new Set(work.map(task => task.family))].map(name => ({
+    type: 'COMPONENT_SET', name,
+    children: work.filter(task => task.family === name).map(({ size, scheme, role }) => ({
+      type: 'COMPONENT', name: `Size=${size}, ${role ? `Role=${role}` : `Scheme=${scheme}`}`
+    }))
+  }))
+};
 page.children.push(masters);
 figma.root = { children: [page] };
 figma.setCurrentPageAsync = async () => {};

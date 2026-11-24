@@ -1,6 +1,6 @@
-import plan from '../../tools/prepare-library/library-plan.json';
 import { schemes } from '../palette';
-import { loadColors, openLibrary } from './library';
+import { libraryKeys as bundleKeys, loadColors, openLibrary } from './library';
+export { bundleKeys };
 
 const paintFields = ['fills', 'strokes'];
 const properties = [
@@ -16,17 +16,13 @@ const drawableTypes = new Set([
   'RECTANGLE', 'ELLIPSE', 'LINE', 'POLYGON', 'STAR'
 ]);
 
-export const bundleKeys = [...plan.objects.flatMap(({ id }) =>
-  ['large', 'small'].flatMap(size => ['main', 'background'].map(role => `${id}/${size}/${role}`))),
-...plan.backgrounds.map(({ size, scheme }) => `background/${size}/${scheme}`)];
-
 export function validateBundle(bundle) {
   const variants = Array.isArray(bundle?.variants) ? bundle.variants : [];
   const keys = new Set(variants.map(variant => variant?.key));
   if (bundle?.version !== 1 || keys.size !== bundleKeys.length ||
       bundle.variants.length !== bundleKeys.length || bundleKeys.some(key => !keys.has(key)) ||
       !Array.isArray(bundle.palettes) || bundle.palettes.length !== Object.keys(schemes).length ||
-      Object.keys(schemes).some(scheme => !bundle.palettes.some(palette => palette.id === scheme &&
+      Object.keys(schemes).some(scheme => !bundle.palettes.some(palette => palette?.id === scheme &&
         ['background', 'object'].every(channel => Array.isArray(palette[channel]) &&
           palette[channel].length === 4 && palette[channel].every(isRGB))))) {
     throw new Error('Ожидается выгрузка библиотеки из 46 мастеров и трёх палитр.');
@@ -40,7 +36,8 @@ export function validateBundle(bundle) {
           !Array.isArray(node.transform) || node.transform.length !== 2 ||
           !node.transform.every(row => Array.isArray(row) && row.length === 3 && row.every(Number.isFinite)) ||
           typeof node.visible !== 'boolean' || typeof node.locked !== 'boolean' ||
-          !node.properties || typeof node.properties !== 'object' ||
+          !node.properties || typeof node.properties !== 'object' || Array.isArray(node.properties) ||
+          (node.children !== undefined && !Array.isArray(node.children)) ||
           (node.type === 'VECTOR' && !node.vector)) {
         throw new Error(`Некорректные данные слоя «${node?.name ?? '?'}» в ${key}.`);
       }

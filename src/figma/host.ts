@@ -40,6 +40,7 @@ export interface Drawable extends Node, Dimensions {
   relativeTransform: Transform;
   readonly absoluteTransform?: Transform;
   readonly absoluteRenderBounds?: Rect | null;
+  readonly clipsContent?: boolean;
 }
 
 export interface Container extends Drawable {
@@ -48,12 +49,18 @@ export interface Container extends Drawable {
   insertChild(index: number, node: Drawable): void;
 }
 
+export type NodeChangeEvent = {
+  readonly nodeChanges: readonly { type: string; node: Node | { id: string; removed: true } }[];
+};
+
 export interface Page extends Node {
   readonly type: 'PAGE';
   readonly children: readonly Drawable[];
   selection: readonly Drawable[];
   appendChild(node: Drawable): void;
   loadAsync(): Promise<void>;
+  on(event: 'nodechange', listener: (event: NodeChangeEvent) => void): void;
+  off(event: 'nodechange', listener: (event: NodeChangeEvent) => void): void;
 }
 
 export interface Section extends Container {

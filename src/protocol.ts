@@ -13,7 +13,8 @@ export type Command =
 
 export type Message =
   | { type: 'selection'; selection: SelectionState }
-  | { type: 'library'; state: LibraryState; error?: string }
+  | { type: 'library'; state: LibraryState; error?: string; autoRepair?: boolean }
+  | { type: 'invalidate-export'; sceneId: string }
   | { type: 'progress'; text: string }
   | { type: 'result'; ok: boolean; text: string; report?: object; libraryBundle?: object; download?: { sceneId: string; filename: string; svg: string } };
 

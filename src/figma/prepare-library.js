@@ -1,6 +1,7 @@
 import { prepareSvgExport } from '../svg';
 import P from '../../tools/prepare-library/library-plan.json';
-import { demoSectionName, findLibrarySections, libraryMetadata, librarySectionName, librarySections } from './library';
+import { demoSectionName, findLibrarySections, indexLibrary, libraryKeys, libraryMetadata, librarySectionName,
+  librarySections, validateInstalledLibrary } from './library';
 import { applyArtwork, bundleExtras, validateBundle } from './library-bundle.js';
 
 const rgbKey = c => [c.r, c.g, c.b].map(v => v.toFixed(7)).join(',');
@@ -403,6 +404,7 @@ export function createPreparation(figma, status) {
   let cancelled = false;
   let rollbackFailed = false;
   let revertPageLink;
+  const resized = new Map();
   const checkOpen = () => {
     if (cancelled) throw new Error('Подготовка отменена.');
   };
@@ -419,6 +421,11 @@ export function createPreparation(figma, status) {
         catch (error) { failures.push(error); }
       }
     }
+    for (const [node, { width, height }] of [...resized].reverse()) {
+      try { if (!node.removed) node.resizeWithoutConstraints(width, height); }
+      catch (error) { failures.push(error); }
+    }
+    resized.clear();
     if (failures.length) {
       rollbackFailed = true;
       console.error('Не удалось полностью откатить подготовку библиотеки', failures);
@@ -427,38 +434,56 @@ export function createPreparation(figma, status) {
 
   const attempt = { created, checkOpen, status };
   function commit() {
-    if (Object.values(created).some(entries => entries.length)) figma.commitUndo();
+    if (resized.size || Object.values(created).some(entries => entries.length)) figma.commitUndo();
     for (const entries of Object.values(created)) entries.length = 0;
+    resized.clear();
     revertPageLink = undefined;
+  }
+
+  function expand(node, width, height) {
+    if (width <= node.width && height <= node.height) return;
+    if (!resized.has(node)) resized.set(node, { width: node.width, height: node.height });
+    node.resizeWithoutConstraints(Math.max(node.width, width), Math.max(node.height, height));
   }
 
   async function install(bundle) {
     validateBundle(bundle);
     const found = await findLibrarySections(figma);
     checkOpen();
-    if (found?.masters.length) {
-      await prepare('setup');
-      return;
-    }
+    if (found?.masters.length > 1 || found?.demos.length > 1) throw new Error('Найдены дубликаты секций библиотеки.');
+    const existing = found?.masters[0];
+    const indexed = existing && indexLibrary(existing);
     const page = found?.page ?? figma.currentPage;
-    if (found) demoSection(figma, created, page);
     await figma.setCurrentPageAsync(page);
     checkOpen();
+    const missing = bundle.variants.filter(({ key }) => !indexed?.index.has(key));
+    if (existing && !missing.length) {
+      // Common repair: the demo section was removed but the library and palette are intact.
+      const intact = await validateInstalledLibrary(figma, existing).then(() => true, () => false);
+      checkOpen();
+      if (intact) {
+        demoSection(figma, created, page, existing);
+        commit();
+        return;
+      }
+    }
     status('Установка палитр…');
     const tokens = await prepareTokens(figma, attempt, bundle.palettes, bundleExtras(bundle, rgbKey));
     checkOpen();
 
-    const section = figma.createSection();
-    created.sections.push(section);
-    page.appendChild(section);
-    section.name = librarySectionName;
-    section.x = page.children.reduce((right, node) => node === section ? right : Math.max(right, node.x + node.width), 0) +
-      (page.children.length > 1 ? 160 : 0);
-    section.y = 0;
+    const section = existing ?? figma.createSection();
+    if (!existing) {
+      created.sections.push(section);
+      page.appendChild(section);
+      section.name = librarySectionName;
+      section.x = page.children.reduce((right, node) => node === section ? right : Math.max(right, node.x + node.width), 0) +
+        (page.children.length > 1 ? 160 : 0);
+      section.y = 0;
+    }
     const families = new Map();
-    for (const [index, { key, tree }] of bundle.variants.entries()) {
+    for (const [index, { key, tree }] of missing.entries()) {
       checkOpen();
-      status(`Установка библиотеки · ${index + 1}/${bundle.variants.length}`);
+      status(`Установка библиотеки · ${index + 1}/${missing.length}`);
       const master = figma.createComponent();
       created.nodes.push(master);
       section.appendChild(master);
@@ -466,6 +491,15 @@ export function createPreparation(figma, status) {
       await applyArtwork(figma, attempt, master, tree, tokens, rgbKey);
       const [family, size, variant] = key.split('/');
       master.name = `Size=${size}, ${family === 'background' ? 'Scheme' : 'Role'}=${variant}`;
+      const set = indexed?.families.get(family);
+      if (set) {
+        const right = Math.max(60, ...set.children.map(node => node.x + node.width + 60));
+        set.appendChild(master);
+        master.x = right;
+        master.y = 60;
+        expand(set, right + master.width + 60, master.height + 120);
+        continue;
+      }
       const entries = families.get(family) ?? [];
       entries.push(master);
       families.set(family, entries);
@@ -478,13 +512,18 @@ export function createPreparation(figma, status) {
       gridSet(set);
       return set;
     });
-    const cellWidth = Math.max(...sets.map(set => set.width)) + 120;
-    const cellHeight = Math.max(...sets.map(set => set.height)) + 120;
-    sets.forEach((set, i) => {
-      set.x = 40 + (i % 2) * cellWidth;
-      set.y = 40 + Math.floor(i / 2) * cellHeight;
-    });
-    section.resizeWithoutConstraints(cellWidth * 2 + 80, Math.ceil(sets.length / 2) * cellHeight + 80);
+    if (sets.length) {
+      const left = existing ? Math.max(40, ...section.children.filter(node => !sets.includes(node))
+        .map(node => node.x + node.width + 120)) : 40;
+      const cellWidth = Math.max(...sets.map(set => set.width)) + 120;
+      const cellHeight = Math.max(...sets.map(set => set.height)) + 120;
+      sets.forEach((set, i) => {
+        set.x = left + (i % 2) * cellWidth;
+        set.y = 40 + Math.floor(i / 2) * cellHeight;
+      });
+    }
+    expand(section, Math.max(...section.children.map(node => node.x + node.width)) + 40,
+      Math.max(...section.children.map(node => node.y + node.height)) + 40);
     demoSection(figma, created, page, section);
     if (!found) {
       const { namespace, pageKey } = libraryMetadata;
@@ -492,6 +531,8 @@ export function createPreparation(figma, status) {
       figma.root.setSharedPluginData(namespace, pageKey, page.id);
       revertPageLink = () => figma.root.setSharedPluginData(namespace, pageKey, previous);
     }
+    await validateInstalledLibrary(figma, section);
+    checkOpen();
     commit();
   }
 
@@ -504,8 +545,9 @@ export function createPreparation(figma, status) {
     const demo = demoSection(figma, created, page);
     if (mode === 'verify' && (!section || !demo)) throw new Error('Сначала нажмите «Подготовить библиотеку».');
 
+    if (section) await validateInstalledLibrary(figma, section);
+    checkOpen();
     if (section && mode === 'setup') {
-      // The existing masters work in copies too, independently of the original layer IDs.
       if (!demo) {
         await figma.setCurrentPageAsync(page);
         checkOpen();
@@ -516,6 +558,19 @@ export function createPreparation(figma, status) {
     }
 
     const work = tasks();
+    let overview = section?.children.find(n => n.type === 'FRAME' && n.name === 'Обзор · 46 экземпляров');
+    if (mode === 'verify') {
+      const sample = await figma.getNodeByIdAsync(work[0].sourceId);
+      checkOpen();
+      let ancestor = sample?.parent;
+      while (ancestor && ancestor.type !== 'PAGE') ancestor = ancestor.parent;
+      if (ancestor?.id !== page.id) {
+        return {
+          text: 'Проверены 46 установленных мастеров, три палитры и цветовые привязки.',
+          report: { version: 1, pageName: page.name, sectionId: section.id, variants: libraryKeys }
+        };
+      }
+    }
     status('Проверка исходных слоёв и палитр…');
     const sources = await inspectSources(figma, page, work, checkOpen);
     const palettes = await readPalettes(figma, checkOpen);
@@ -525,7 +580,6 @@ export function createPreparation(figma, status) {
     const tokens = await prepareTokens(figma, attempt, palettes, inspectPaintSlots(palettes, work, sources), mode === 'verify');
     checkOpen();
 
-    let overview = section?.children.find(n => n.type === 'FRAME' && n.name === 'Обзор · 46 экземпляров');
     if (!section) {
       status('Создание 46 мастер-компонентов…');
       const right = Math.max(0, ...page.children.map(n => n.x + n.width));

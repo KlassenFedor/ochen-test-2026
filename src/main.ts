@@ -1,6 +1,6 @@
 import { itemName, parseNames, suggestItems } from './catalog';
 import { inflate } from 'pako/lib/inflate.js';
-import type { Host } from './figma/host';
+import type { Frame, Host, Node, NodeChangeEvent } from './figma/host';
 import { libraryState } from './figma/library';
 import { createPreparation } from './figma/prepare-library.js';
 import { captureLibrary, type LibraryBundle } from './figma/library-bundle.js';
@@ -23,26 +23,83 @@ figma.showUI(__html__, { width: 408, height: 680, themeColors: true });
 let busy = false;
 let closed = false;
 let preparation: ReturnType<typeof createPreparation> | undefined;
+let exported: { frame: Frame; ids: Set<string>; ancestors: Set<string> } | undefined;
+let currentPage = figma.currentPage;
 const send = (message: Message) => {
   if (!closed) figma.ui.postMessage(message);
 };
 
 function sendSelection() {
   if (closed) return;
-  try { send({ type: 'selection', selection: composer.selection() }); }
+  try {
+    const selection = composer.selection();
+    if (exported && selection.scene?.id !== exported.frame.id) invalidateExport();
+    send({ type: 'selection', selection });
+  }
   catch { send({ type: 'selection', selection: {} }); }
 }
 async function sendLibraryState() {
   if (closed) return;
   try {
     const state = await libraryState(figma);
-    send({ type: 'library', state: portable && state !== 'ready' ? 'bundled' : state });
+    send(state === 'damaged'
+      ? { type: 'library', state, autoRepair: Boolean(portable) }
+      : { type: 'library', state: portable && state !== 'ready' ? 'bundled' : state });
   } catch (error) {
     send({ type: 'library', state: 'unavailable', error: error instanceof Error ? error.message : String(error) });
   }
 }
+
+function watchExport(frame: Frame) {
+  const ids = new Set<string>();
+  const pending: Node[] = [frame];
+  while (pending.length) {
+    const node = pending.pop()!;
+    ids.add(node.id);
+    for (const child of node.children ?? []) pending.push(child);
+  }
+  const ancestors = new Set<string>();
+  for (let node = frame.parent; node && node.type !== 'PAGE'; node = node.parent) ancestors.add(node.id);
+  return exported = { frame, ids, ancestors };
+}
+
+function invalidateExport() {
+  if (!exported) return;
+  const sceneId = exported.frame.id;
+  exported = undefined;
+  send({ type: 'invalidate-export', sceneId });
+}
+
+function onNodeChange({ nodeChanges }: NodeChangeEvent) {
+  const snapshot = exported;
+  if (!snapshot) return;
+  for (const change of nodeChanges) {
+    const node = change.node;
+    if (snapshot.ids.has(node.id) || (change.type === 'DELETE' && snapshot.ancestors.has(node.id))) {
+      invalidateExport();
+      return;
+    }
+    if (node.removed) continue;
+    for (let parent = node.parent; parent && parent.type !== 'PAGE'; parent = parent.parent) {
+      if (parent.id === snapshot.frame.id) {
+        invalidateExport();
+        return;
+      }
+    }
+  }
+}
+
+currentPage.on('nodechange', onNodeChange);
 figma.on('selectionchange', sendSelection);
-figma.on('currentpagechange', sendSelection);
+figma.on('currentpagechange', () => {
+  if (currentPage.id !== figma.currentPage.id) {
+    currentPage.off('nodechange', onNodeChange);
+    currentPage = figma.currentPage;
+    currentPage.on('nodechange', onNodeChange);
+    invalidateExport();
+  }
+  sendSelection();
+});
 figma.on('close', () => {
   closed = true;
   preparation?.cancel();
@@ -111,10 +168,15 @@ figma.ui.onmessage = async (data: unknown) => {
         composer.migrate(command.sceneId);
         text = 'Этот кадр доступен для редактирования с другой установкой плагина.';
         break;
-      case 'export':
-        response = { type: 'result', ok: true, text: 'SVG подготовлен.', download: await composer.exportSvg(command.sceneId) };
+      case 'export': {
+        let snapshot: typeof exported;
+        const download = await composer.exportSvg(command.sceneId, frame => { snapshot = watchExport(frame); });
+        if (!snapshot || exported !== snapshot) throw new Error('Композиция изменилась во время экспорта. Экспортируйте SVG снова.');
+        response = { type: 'result', ok: true, text: 'SVG подготовлен.', download };
         return;
+      }
     }
+    invalidateExport();
     figma.commitUndo();
     response = { type: 'result', ok: true, text };
   } catch (error) {

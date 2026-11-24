@@ -167,10 +167,18 @@ test('the panel stages imports in the matching tab and confirms recoloring for o
     const href = get('download').href;
     assert.ok(href);
     assert.equal(get('download').hidden, false);
+    host({ type: 'invalidate-export', sceneId: 'B' });
+    assert.equal(get('download').hidden, false);
+    host({ type: 'invalidate-export', sceneId: 'A' });
+    assert.equal(get('download').hidden, true);
+    assert.equal(get('download').href, undefined);
+    assert.equal((await fetch(href).catch(() => undefined)), undefined, 'the edited scene URL is revoked');
+    host(download);
+    const secondHref = get('download').href;
     select('B', 'peach');
     assert.equal(get('download').hidden, true);
     assert.equal(get('download').href, undefined);
-    assert.equal((await fetch(href).catch(() => undefined)), undefined, 'the old object URL is revoked');
+    assert.equal((await fetch(secondHref).catch(() => undefined)), undefined, 'the old object URL is revoked');
     host(download);
     assert.equal(get('download').hidden, true, 'a late export must not attach a link to the next frame');
   } finally {

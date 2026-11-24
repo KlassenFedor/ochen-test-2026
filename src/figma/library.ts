@@ -3,6 +3,7 @@ import { isSize, type Size } from '../layout';
 import { isScheme, isSlot, paletteColor, readPaletteSnapshot, record, rgb, schemes,
   type AppliedPalette, type PaletteChoice, type Scheme, type Slot } from '../palette';
 import type { Component, Host, Instance, Node, Paint, Section, Variable } from './host';
+import plan from '../../tools/prepare-library/library-plan.json';
 
 const libraryPageName = 'Библиотека компонентов';
 export const librarySectionName = 'Библиотека · Компоненты';
@@ -13,6 +14,9 @@ const detailsName = 'Illustration / Details';
 const objectIds = new Set(catalog.map(item => item.id));
 const channels = ['background', 'object'] as const;
 const fields = ['fills', 'strokes'] as const;
+export const libraryKeys = [...plan.objects.flatMap(({ id }) =>
+  ['large', 'small'].flatMap(size => ['main', 'background'].map(role => `${id}/${size}/${role}`))),
+...plan.backgrounds.map(({ size, scheme }) => `background/${size}/${scheme}`)];
 
 function unique<T>(entries: T[], name: string): T {
   if (entries.length !== 1) {
@@ -40,7 +44,7 @@ export async function librarySections(host: Host) {
   return found;
 }
 
-export type LibraryState = 'ready' | 'needs-setup' | 'unavailable' | 'bundled';
+export type LibraryState = 'ready' | 'needs-setup' | 'damaged' | 'unavailable' | 'bundled';
 
 export async function libraryState(host: Host): Promise<Exclude<LibraryState, 'bundled'>> {
   const found = await findLibrarySections(host);
@@ -48,19 +52,19 @@ export async function libraryState(host: Host): Promise<Exclude<LibraryState, 'b
   const { masters, demos } = found;
   if (masters.length > 1) unique(masters, librarySectionName);
   if (demos.length > 1) unique(demos, demoSectionName);
-  return masters.length && demos.length ? 'ready' : 'needs-setup';
+  if (!masters.length) return 'needs-setup';
+  try { await validateInstalledLibrary(host, masters[0]!); }
+  catch { return 'damaged'; }
+  return demos.length ? 'ready' : 'needs-setup';
 }
 
-export async function openLibrary(host: Host) {
-  const { page, masters: sections } = await librarySections(host);
-  const masters = unique(sections, librarySectionName);
-
+export function indexLibrary(masters: Section) {
   const index = new Map<string, Component>();
-  const families = new Set<string>();
+  const families = new Map<string, Node>();
   for (const set of masters.children) {
     if (set.type !== 'COMPONENT_SET' || (!objectIds.has(set.name) && set.name !== 'background')) continue;
     if (families.has(set.name)) throw new Error(`Дубликат набора «${set.name}».`);
-    families.add(set.name);
+    families.set(set.name, set);
     for (const node of set.children ?? []) {
       if (node.type !== 'COMPONENT') continue;
       const component = node as Component;
@@ -76,6 +80,12 @@ export async function openLibrary(host: Host) {
     }
   }
   const component = (key: string) => unique(index.has(key) ? [index.get(key)!] : [], key);
+  return { index, families, component };
+}
+
+export async function openLibrary(host: Host) {
+  const { page, masters: sections } = await librarySections(host);
+  const { component } = indexLibrary(unique(sections, librarySectionName));
   return {
     page, demo: () => unique(page.children
       .filter((node): node is Section => node.type === 'SECTION' && node.name === demoSectionName), demoSectionName),
@@ -135,7 +145,40 @@ export async function loadColors(host: Host) {
     return Boolean(variable && roles.get(id) === slot &&
       names.get(variable.variableCollectionId) === collectionPrefix + scheme);
   }
-  return { roles, applyChoice, token, matchesToken };
+  function validateBindings(master: Component, key: string) {
+    const validated = new Set<string>();
+    const backgroundOnly = key.startsWith('background/') || key.endsWith('/background');
+    const pending: Node[] = [master];
+    while (pending.length) {
+      const node = pending.pop()!;
+      for (const field of fields) {
+        const paints = node[field];
+        if (paints === undefined) continue;
+        if (typeof paints === 'symbol') throw new Error(`Смешанная краска в «${key}» у слоя «${node.name}».`);
+        for (const paint of paints) {
+          const binding = paint.type === 'SOLID' && paint.boundVariables?.color;
+          const slot = binding && roles.get(binding.id);
+          if (!binding || !slot || (backgroundOnly && slot.startsWith('object/'))) {
+            throw new Error(`Некорректная цветовая привязка в «${key}» у слоя «${node.name}».`);
+          }
+          if (!validated.has(binding.id)) {
+            tokenColor(byId.get(binding.id)!);
+            validated.add(binding.id);
+          }
+        }
+      }
+      for (const child of node.children ?? []) pending.push(child);
+    }
+  }
+  return { roles, applyChoice, token, matchesToken, validateBindings };
+}
+
+export async function validateInstalledLibrary(host: Host, section: Section) {
+  const { component } = indexLibrary(section);
+  const masters = libraryKeys.map(key => ({ key, node: component(key) }));
+  const colors = await loadColors(host);
+  for (const scheme of Object.keys(schemes).filter(isScheme)) colors.applyChoice({ kind: 'preset', scheme });
+  for (const { key, node } of masters) colors.validateBindings(node, key);
 }
 
 export type ColorLibrary = Awaited<ReturnType<typeof loadColors>>;

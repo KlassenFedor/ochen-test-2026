@@ -7,7 +7,7 @@ import { catalog, parseNames } from '../src/catalog';
 import { createPreparation } from '../src/figma/prepare-library.js';
 import { captureLibrary, type LibraryBundle } from '../src/figma/library-bundle.js';
 import { libraryState } from '../src/figma/library';
-import type { Host, Paint, SolidPaint, Variable } from '../src/figma/host';
+import type { Host, NodeChangeEvent, Paint, SolidPaint, Variable } from '../src/figma/host';
 import { createComposer } from '../src/figma/scene';
 import type { Transform } from '../src/layout';
 import { fromHex, parsePalette, type Slot } from '../src/palette';
@@ -35,6 +35,7 @@ class MockNode {
   locked = false;
   clipsContent = false;
   selection: MockNode[] = [];
+  private nodeChangeListeners = new Set<(event: NodeChangeEvent) => void>();
   master: MockNode | null = null;
   variantProperties?: Record<string, string>;
   loaded = false;
@@ -66,6 +67,11 @@ class MockNode {
     while (this.children.length) this.children[0].remove();
   }
   async loadAsync() { this.loaded = true; }
+  on(_event: 'nodechange', listener: (event: NodeChangeEvent) => void) { this.nodeChangeListeners.add(listener); }
+  off(_event: 'nodechange', listener: (event: NodeChangeEvent) => void) { this.nodeChangeListeners.delete(listener); }
+  emitNodeChange(type: string, node: MockNode | { removed: true; id: string }) {
+    for (const listener of this.nodeChangeListeners) listener({ nodeChanges: [{ type, node }] });
+  }
   resizeWithoutConstraints(width: number, height: number) {
     if (this.type === 'LINE' && height !== 0) throw new Error('LineNode height must be zero');
     this.width = width;
@@ -149,7 +155,7 @@ function fixture() {
       { id: source, name: id, variableCollectionId: 'source', valuesByMode: { base: { r: (i + 1) / 7, g: (j + 1) / 9, b: 0 } } }
     );
   }
-  for (const name of ['book', 'phone', 'headphones', 'background']) {
+  for (const name of [...catalog.map(item => item.id), 'background']) {
     const family = new MockNode('COMPONENT_SET', name);
     library.appendChild(family);
     for (const size of ['large', 'small']) for (const variant of name === 'background' ? schemes : ['main', 'background']) {
@@ -173,6 +179,7 @@ function fixture() {
     root: { children: [drawing, page] },
     currentPage: drawing,
     skipInvisibleInstanceChildren: true,
+    async getNodeByIdAsync(_id: string) { return null; },
     async setCurrentPageAsync(value: MockNode) { this.currentPage = value; },
     createFrame() {
       const frame = new MockNode('FRAME');
@@ -456,6 +463,27 @@ test('alternative stays on the source page and keeps both grouped and directly h
   assert.deepEqual(items.filter(item => item.name === 'Книга').map(item => item.visible), [true, false]);
 });
 
+test('alternative is placed outside nested clipping frames on the source page', async () => {
+  const f = fixture();
+  const source = await build(f, 'книга') as unknown as MockNode;
+  const outer = new MockNode('FRAME', 'Outer crop', 1200, 1200);
+  const inner = new MockNode('FRAME', 'Inner crop', 1100, 1100);
+  const group = new MockNode('GROUP', 'Group');
+  outer.clipsContent = inner.clipsContent = true;
+  f.page.appendChild(outer);
+  outer.x = 240;
+  outer.y = 150;
+  outer.appendChild(inner);
+  inner.appendChild(group);
+  group.appendChild(source);
+  source.x = source.y = 0;
+  const alternate = await f.composer.alternative(source.id) as unknown as MockNode;
+  assert.equal(alternate.parent, f.page);
+  assert.ok(alternate.x >= outer.x + outer.width + 80);
+  assert.equal(alternate.y, outer.y);
+  assert.equal(source.parent, group);
+});
+
 test('role swap preserves manual paint opacity and reports a manual color replaced by the new palette slot', async () => {
   const f = fixture();
   const frame = await build(f, 'книга');
@@ -580,6 +608,31 @@ test('the main entry commits undo once per successful write, including migration
     const [frame] = f.page.selection;
     assert.equal(commits, 1);
     await send({ type: 'export', sceneId: frame.id });
+    // The host announces currentpagechange after the command has moved us to the library page.
+    listeners.get('currentpagechange')!();
+    await send({ type: 'export', sceneId: frame.id });
+    const book = frame.children[1];
+    const invalidations = () => messages.filter(message => message.type === 'invalidate-export').length;
+    const initialInvalidations = invalidations();
+    f.drawing.emitNodeChange('PROPERTY_CHANGE', book);
+    f.page.emitNodeChange('PROPERTY_CHANGE', f.demo);
+    assert.equal(invalidations(), initialInvalidations);
+    f.page.emitNodeChange('PROPERTY_CHANGE', book.children[0]);
+    assert.equal(invalidations(), initialInvalidations + 1);
+    await send({ type: 'export', sceneId: frame.id });
+    const ink = book.children[0];
+    f.page.emitNodeChange('DELETE', { id: ink.id, removed: true });
+    assert.equal(invalidations(), initialInvalidations + 2);
+    const exportAsync = frame.exportAsync.bind(frame);
+    frame.exportAsync = async settings => {
+      book.x++;
+      f.page.emitNodeChange('PROPERTY_CHANGE', book);
+      return exportAsync(settings);
+    };
+    await send({ type: 'export', sceneId: frame.id });
+    assert.match(messages.filter(message => message.type === 'result').at(-1).text, /во время экспорта/);
+    assert.equal(messages.filter(message => message.type === 'result').at(-1).download, undefined);
+    frame.exportAsync = exportAsync;
     await send({ type: 'add', sceneId: 'stale', id: 'phone' });
     assert.equal(commits, 1);
     await send({ type: 'add', sceneId: frame.id, id: 'phone' });
@@ -592,7 +645,7 @@ test('the main entry commits undo once per successful write, including migration
     await send({ type: 'alternative', sceneId: frame.id });
     assert.equal(commits, 6);
     assert.deepEqual(messages.filter(message => message.type === 'result').map(message => message.ok),
-      [true, true, false, true, true, true, true, true]);
+      [true, true, true, true, false, false, true, true, true, true, true]);
 
     f.demo.remove();
     await send({ type: 'ready' });
@@ -741,6 +794,10 @@ test('the portable library installs in a blank file, retains geometry and color 
   assert.equal(f.host.root.children.length, 1);
   assert.equal(f.host.currentPage, f.drawing);
   assert.equal(f.commits(), 1);
+  const check = await createPreparation(host, () => {}).run('verify');
+  assert.match(check.text, /46 установленных мастеров/);
+  assert.equal((check.report as { variants: string[] }).variants.length, 46);
+  assert.equal(f.commits(), 1);
 
   const snapshot = await captureLibrary(host);
   assert.equal(snapshot.variants.length, 46);
@@ -760,6 +817,36 @@ test('the portable library installs in a blank file, retains geometry and color 
   await createPreparation(host, () => {}).install(f.bundle);
   assert.equal(f.drawing.children.length, 2);
   assert.equal(f.commits(), 1);
+});
+
+test('portable readiness detects missing variants and palette variables and restores them in place', async () => {
+  const f = portableFixture();
+  const host = f.host as unknown as Host & { commitUndo(): void };
+  await createPreparation(host, () => {}).install(f.bundle);
+  const [section] = f.drawing.children;
+  const book = section.children.find(node => node.name === 'book')!;
+  const [missingMaster, preservedMaster] = book.children;
+  const { x, y } = preservedMaster;
+  missingMaster.remove();
+  assert.equal(await libraryState(host), 'damaged');
+  await assert.rejects(createPreparation(host, () => {}).run('verify'), /book\/large\/main/);
+  await createPreparation(host, () => {}).install(f.bundle);
+  assert.equal(await libraryState(host), 'ready');
+  assert.equal(preservedMaster.parent, book);
+  assert.deepEqual([preservedMaster.x, preservedMaster.y], [x, y]);
+  assert.ok(book.children.some(node => node.name === missingMaster.name && node.id !== missingMaster.id));
+  assert.equal(f.drawing.children[0], section);
+
+  const peach = f.collections.find(collection => collection.name === 'Illustration / Palette / peach')!;
+  const token = f.variables.findIndex(variable => variable.variableCollectionId === peach.id && variable.name === 'object/3');
+  assert.ok(token >= 0);
+  f.variables.splice(token, 1);
+  assert.equal(await libraryState(host), 'damaged');
+  await assert.rejects(createPreparation(host, () => {}).run('verify'), /peach\/object\/3/);
+  await createPreparation(host, () => {}).install(f.bundle);
+  assert.equal(await libraryState(host), 'ready');
+  const frame = await build(f, 'книга');
+  assert.equal(frame.children[1].master?.parent, book);
 });
 
 test('cancelling portable installation after writing masters rolls back sections, nodes and variables', async () => {

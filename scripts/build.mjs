@@ -7,15 +7,21 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 const html = await readFile(new URL('../src/ui.html', import.meta.url), 'utf8');
 const placeholder = '<!-- UI_SCRIPT -->';
 if (!html.includes(placeholder)) throw new Error('No UI script placeholder in src/ui.html');
-const portable = await readFile(new URL('../data/portable-library.json', import.meta.url), 'utf8')
-  .then(JSON.parse, error => {
+const portableSource = await readFile(new URL('../data/portable-library.json', import.meta.url), 'utf8')
+  .catch(error => {
     if (error.code === 'ENOENT') return null;
     throw error;
   });
-if (portable && (portable.version !== 1 || !Array.isArray(portable.variants) ||
-    portable.variants.length !== 46 || portable.variants.some(variant => !variant?.tree) ||
-    !Array.isArray(portable.palettes) || portable.palettes.length !== 3)) {
-  throw new Error('data/portable-library.json must be the complete export of 46 masters and three palettes.');
+let portable;
+if (portableSource !== null) {
+  const module = await build({
+    absWorkingDir: root, bundle: true, platform: 'node', format: 'esm', write: false,
+    stdin: { contents: "export { validateBundle } from './src/figma/library-bundle.js';", resolveDir: root }
+  });
+  const encoded = Buffer.from(module.outputFiles[0].contents).toString('base64');
+  const { validateBundle } = await import(`data:text/javascript;base64,${encoded}`);
+  try { portable = validateBundle(JSON.parse(portableSource)); }
+  catch (error) { throw new Error(`data/portable-library.json · ${error.message}`, { cause: error }); }
 }
 const packedLibrary = portable
   ? gzipSync(JSON.stringify(portable), { level: 9 }).toString('base64')

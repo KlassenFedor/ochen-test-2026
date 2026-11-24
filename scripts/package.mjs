@@ -1,4 +1,4 @@
-import { readFile, writeFile, copyFile, mkdir, mkdtemp, rm, rename } from 'node:fs/promises';
+import { access, readFile, writeFile, copyFile, mkdir, mkdtemp, rm, rename } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,8 +13,7 @@ if (args.length && (args.length !== 2 || args[0] !== '--plugin-id' || !/^\d+$/.t
 }
 if (portableOnly) {
   try {
-    const data = JSON.parse(await readFile(resolve(root, 'data/portable-library.json'), 'utf8'));
-    if (!data) throw new Error('Empty library bundle');
+    await access(resolve(root, 'data/portable-library.json'));
   } catch (error) {
     throw new Error('Для автономного ZIP нужна выгрузка data/portable-library.json из рабочего файла Figma.', { cause: error });
   }

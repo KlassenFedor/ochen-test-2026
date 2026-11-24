@@ -28,6 +28,7 @@ let pending: Exclude<Command['type'], 'ready' | 'cancel-library'> | 'import' | u
 let mode: 'names' | 'title' = 'names';
 let selection: SelectionState = {};
 let library: LibraryState | undefined;
+let autoRepair = false;
 let installingLibrary = false;
 let appliedPalette = '';
 let downloadUrl: string | undefined;
@@ -68,13 +69,17 @@ function switchView(next: View, focus = false) {
   if (focus) button(next + '-tab').focus();
 }
 
+function canBuild() {
+  return library === 'ready' || library === 'bundled' || (library === 'damaged' && autoRepair);
+}
+
 function update() {
   const busy = Boolean(pending);
-  button('build').disabled = busy || (library !== 'ready' && library !== 'bundled');
+  button('build').disabled = busy || !canBuild();
   button('import-build-palette').disabled = busy;
   button('prepare-library').hidden = library !== 'needs-setup';
   button('prepare-library').disabled = busy;
-  button('verify-library').disabled = busy || library !== 'ready';
+  button('verify-library').disabled = busy || (library !== 'ready' && library !== 'damaged');
   button('export-library').disabled = busy || library !== 'ready';
   button('cancel-library').hidden = !installingLibrary && pending !== 'prepare-library' && pending !== 'verify-library';
   for (const id of ['alternative', 'export', 'import-scene-palette']) button(id).disabled = busy || !selection.scene;
@@ -163,7 +168,7 @@ for (const name of ['create', 'edit'] as const) {
 
 element<HTMLFormElement>('compose').addEventListener('submit', event => {
   event.preventDefault();
-  if (library !== 'ready' && library !== 'bundled') return;
+  if (!canBuild()) return;
   const palette = options.get(buildPalette.value);
   if (!isFormat(format.value) || !isSize(size.value) || !palette) return;
   send({
@@ -257,17 +262,24 @@ window.addEventListener('message', event => {
   if (!message) return;
   if (message.type === 'selection') {
     updateSelection(message.selection);
+  } else if (message.type === 'invalidate-export') {
+    if (message.sceneId === selection.scene?.id) clearDownload();
   } else if (message.type === 'library') {
     library = message.state;
+    autoRepair = Boolean(message.autoRepair);
     element('library-notice').hidden = library === 'ready';
     element('library-status').textContent = message.error ?? (library === 'bundled'
       ? 'Встроенная библиотека загрузится при первой сборке композиции.'
+      : library === 'damaged'
+      ? autoRepair
+        ? 'Библиотека повреждена. При следующей сборке плагин попробует восстановить недостающие ресурсы.'
+        : 'Библиотека повреждена. Откройте «Помощь и инструкции» и запустите проверку.'
       : library === 'needs-setup'
       ? 'Библиотеку нужно подготовить один раз в этом файле.'
       : 'Откройте файл задания с библиотекой компонентов и запустите плагин в нём.');
     update();
   } else if (message.type === 'progress') {
-    if (pending === 'build' && library === 'bundled') {
+    if (pending === 'build') {
       installingLibrary = true;
       update();
     }

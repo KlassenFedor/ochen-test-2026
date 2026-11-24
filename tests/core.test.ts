@@ -218,6 +218,38 @@ test('SVG preserves authored group effects and round viewport clipping', () => {
   const opacity = prepareSvgExport(new TextEncoder().encode(clipped.replace('<g id="Кадр"', '<g opacity=".5" id="Кадр"')), frame);
   assert.match(opacity, /<g opacity=".5" id="Kadr" clip-path="url\(#c\)"><g id="Kniga">/);
 });
+
+test('SVG preserves a composition layer with the frame name even when its bounds are unknown', () => {
+  const frame = { name: 'Кадр', width: 100, height: 80, inside: new Set<string>(), layers: new Set(['Кадр']) };
+  const clip = '<defs><clipPath id="c"><rect width="100" height="80"/></clipPath></defs>';
+  const artwork = '<path d="M0 0Z"/><path d="M2 2Z"/>';
+  for (const svg of [
+    `<svg><g clip-path="url(#c)"><g id="Кадр">${artwork}</g></g>${clip}</svg>`,
+    `<svg><g id="Кадр"><g clip-path="url(#c)">${artwork}</g></g>${clip}</svg>`
+  ]) {
+    const result = prepareSvgExport(new TextEncoder().encode(svg), frame);
+    assert.match(result, /<g id="Kadr">/);
+    assert.equal(validateSvg(result), result);
+  }
+});
+
+test('SVG retains namespace declarations on candidate frame and clip wrappers', () => {
+  const frame = { name: 'Кадр', width: 100, height: 80, inside: new Set(['Книга']) };
+  const ns = 'xmlns:xlink="http://www.w3.org/1999/xlink"';
+  const clip = '<defs><clipPath id="c"><rect width="100" height="80"/></clipPath><path id="p" d="M0 0Z"/></defs>';
+  const book = '<g id="Книга"><use xlink:href="#p"/></g>';
+  for (const group of [
+    `<g id="Кадр" ${ns}><g clip-path="url(#c)">${book}</g></g>`,
+    `<g clip-path="url(#c)" ${ns}><g id="Кадр">${book}</g></g>`,
+    `<g clip-path="url(#c)"><g id="Кадр" ${ns}>${book}<path d="M0 0Z"/></g></g>`
+  ]) {
+    const result = prepareSvgExport(new TextEncoder().encode(`<svg>${group}${clip}</svg>`), frame);
+    assert.match(result, /xmlns:xlink=/);
+    assert.match(result, /<use xlink:href="#p"\/>/);
+    assert.equal(validateSvg(result), result);
+  }
+});
+
 test('SVG rejects invalid UTF-8 instead of downloading corrupted characters', () => {
   assert.throws(() => prepareSvgExport(Uint8Array.of(0x3c, 0xd0)), /UTF-8/);
 });

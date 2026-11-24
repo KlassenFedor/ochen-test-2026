@@ -16,6 +16,8 @@ const namespace = 'ochenIllustrationComposer';
 
 function svgFrame(frame: Frame): SvgFrame | undefined {
   if (!frame.clipsContent) return undefined;
+  const visible = frame.children.filter(child => child.visible);
+  const layers = new Set(visible.map(child => child.name));
   const inside = new Set<string>();
   const matrix = frame.absoluteTransform;
   if (matrix) {
@@ -25,7 +27,7 @@ function svgFrame(frame: Frame): SvgFrame | undefined {
       const fits = ({ x, y, width, height }: Rect) =>
         x >= 0 && y >= 0 && x + width <= frame.width && y + height <= frame.height;
       const names = new Map<string, boolean>();
-      for (const node of frame.children.filter(child => child.visible)) {
+      for (const node of visible) {
         const bounds = node.absoluteRenderBounds;
         // Check geometry as well as rendered extents. Figma can return already
         // clipped bounds when a layer overlaps the edge of its parent.
@@ -43,7 +45,7 @@ function svgFrame(frame: Frame): SvgFrame | undefined {
       for (const [name, contained] of names) if (contained) inside.add(name);
     }
   }
-  return { name: frame.name, width: frame.width, height: frame.height, inside };
+  return { name: frame.name, width: frame.width, height: frame.height, inside, layers };
 }
 
 type Scene = {
@@ -96,6 +98,9 @@ function placeFrame(demo: Section, frame: Frame) {
 
 function placeBeside(page: Page, source: Frame, frame: Frame) {
   let anchor: Drawable = source;
+  for (let ancestor = source.parent; ancestor && ancestor.type !== 'PAGE'; ancestor = ancestor.parent) {
+    if ((ancestor as Drawable).clipsContent) anchor = ancestor as Drawable;
+  }
   let parent = anchor.parent;
   while (parent && parent.type !== 'PAGE' && parent.type !== 'SECTION' &&
          (parent.type !== 'FRAME' || (parent as Frame).layoutMode !== 'NONE')) {
@@ -467,8 +472,9 @@ export function createComposer(host: Host) {
       }
     },
     recolor, add, changeRole,
-    async exportSvg(expectedSceneId: string) {
+    async exportSvg(expectedSceneId: string, onStart?: (frame: Frame) => void) {
       const frame = requireFrame(expectedSceneId);
+      onStart?.(frame);
       const viewport = svgFrame(frame);
       const bytes = await frame.exportAsync({ format: 'SVG', svgIdAttribute: true, svgSimplifyStroke: false });
       requireFrame(expectedSceneId);
